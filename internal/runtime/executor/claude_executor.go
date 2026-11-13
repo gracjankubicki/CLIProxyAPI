@@ -21,6 +21,7 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	log "github.com/sirupsen/logrus"
 )
@@ -37,6 +38,7 @@ type ClaudeExecutor struct {
 	// constructors allocate it so copies made per request reuse one store.
 	oauthToolAliases *claudeOAuthToolAliasStore
 	threadBetas      *helps.ClaudeThreadBetaStore
+	reasoningReplay  pluginapi.ReasoningReplayHost
 }
 
 type claudeOAuthCancellationError struct {
@@ -344,8 +346,12 @@ func stripTranslatedDefaultMaxTokens(from sdktranslator.Format, originalPayload,
 	return stripped
 }
 
-func NewClaudeExecutor(cfg *config.Config) *ClaudeExecutor {
-	return &ClaudeExecutor{cfg: cfg, oauthToolAliases: &claudeOAuthToolAliasStore{}, threadBetas: &helps.ClaudeThreadBetaStore{}}
+func NewClaudeExecutor(cfg *config.Config, reasoningReplay ...pluginapi.ReasoningReplayHost) *ClaudeExecutor {
+	var replayHost pluginapi.ReasoningReplayHost
+	if len(reasoningReplay) > 0 {
+		replayHost = reasoningReplay[0]
+	}
+	return &ClaudeExecutor{cfg: cfg, reasoningReplay: replayHost, oauthToolAliases: &claudeOAuthToolAliasStore{}, threadBetas: &helps.ClaudeThreadBetaStore{}}
 }
 
 func (e *ClaudeExecutor) prepareClaudeThreadBetas(ctx context.Context, request *http.Request, auth *cliproxyauth.Auth, body []byte, extraBetas []string, payloadBetasConfigured bool, incomingHeaders http.Header, uncloak bool, metadataSets ...map[string]any) (*helps.ClaudeThreadBetaRequest, error) {
@@ -468,6 +474,16 @@ func (e *ClaudeExecutor) claudeWebSearchResultCacheScope(ctx context.Context, au
 func claudeWebSearchResultCacheCredentialScope(auth *cliproxyauth.Auth) string {
 	if auth == nil {
 		return ""
+	}
+	// Claude OAuth accounts of one organization share search results: measured
+	// 2026-10-21, a web_search_tool_result (with encrypted_content) produced on
+	// one account is accepted and read by another account of the same
+	// organization. Scoping by organization keeps a session's results when it
+	// moves between those accounts, while other organizations and API keys stay
+	// separate.
+	if org, _ := auth.Metadata["organization_uuid"].(string); strings.TrimSpace(org) != "" {
+		sum := sha256.Sum256([]byte("org:" + strings.TrimSpace(org)))
+		return "claude:" + hex.EncodeToString(sum[:8])
 	}
 	identity := strings.TrimSpace(auth.ID)
 	if identity == "" {

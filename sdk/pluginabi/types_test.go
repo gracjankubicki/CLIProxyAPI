@@ -58,6 +58,9 @@ func TestMethodNamesAreStable(t *testing.T) {
 	if SchemaVersionMultiProviderModels != 9 {
 		t.Fatalf("SchemaVersionMultiProviderModels = %d, want 9", SchemaVersionMultiProviderModels)
 	}
+	if SchemaVersionReasoningReplay != 5 {
+		t.Fatalf("SchemaVersionReasoningReplay = %d, want 5", SchemaVersionReasoningReplay)
+	}
 	if MethodPluginRegister != "plugin.register" {
 		t.Fatalf("MethodPluginRegister = %q", MethodPluginRegister)
 	}
@@ -84,6 +87,9 @@ func TestMethodNamesAreStable(t *testing.T) {
 	}
 	if MethodResponseInterceptStreamChunk != "response.intercept_stream_chunk" {
 		t.Fatalf("MethodResponseInterceptStreamChunk = %q", MethodResponseInterceptStreamChunk)
+	}
+	if MethodReasoningReplayPrepare != "reasoning_replay.prepare" || MethodReasoningReplayObserve != "reasoning_replay.observe" || MethodReasoningReplayComplete != "reasoning_replay.complete" {
+		t.Fatalf("reasoning replay methods = %q, %q, %q", MethodReasoningReplayPrepare, MethodReasoningReplayObserve, MethodReasoningReplayComplete)
 	}
 	if MethodWebSocketResponseEvent != "websocket.response_event" {
 		t.Fatalf("MethodWebSocketResponseEvent = %q", MethodWebSocketResponseEvent)

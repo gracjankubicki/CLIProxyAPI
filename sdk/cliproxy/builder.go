@@ -251,6 +251,7 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager := b.coreManager
 	cooldownStateStore := b.cooldownStateStore
 	var appliedRoutingState *routingRuntimeState
+	var sessionCache *coreauth.SessionCache
 	if coreManager == nil {
 		tokenStore := sdkAuth.GetTokenStore()
 		if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && b.cfg != nil {
@@ -263,9 +264,11 @@ func (b *Builder) Build() (*Service, error) {
 		}
 
 		routingState := normalizedRoutingRuntimeState(b.cfg)
-		coreManager = coreauth.NewManager(tokenStore, newRoutingSelector(routingState), nil)
+		sessionCache = coreauth.NewSessionCache(routingState.sessionAffinityTTL)
+		coreManager = coreauth.NewManager(tokenStore, newRoutingSelectorWithCache(routingState, sessionCache), nil)
 		appliedRoutingState = &routingState
 	}
+	statePersistence := enableLocalStatePersistence(b.cfg, sessionCache)
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
 	coreManager.SetConfig(b.cfg)
@@ -291,6 +294,8 @@ func (b *Builder) Build() (*Service, error) {
 		pluginHost:          pluginHost,
 		discoveryManager:    newDiscoveryAdvertiserManager(),
 		appliedRoutingState: appliedRoutingState,
+		sessionCache:        sessionCache,
+		statePersistence:    statePersistence,
 		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
 	}
 	service.proxyPoolPublisher = helps.RegisterProxyPoolPublisher()

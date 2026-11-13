@@ -18,9 +18,21 @@ RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 
 FROM debian:bookworm
 
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*
+# sqlite3 obsluguje endpoint /v0/management/codex-autoban/clear, ktory zdejmuje
+# lokalna blokade konta z prywatnej bazy pluginu codex-token-usage. Klient CLI
+# zastepuje tu sterownik SQLite w go.mod, zeby lokalny patch nie kolidowal z
+# upstreamem przy kazdym upgradzie.
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates sqlite3 && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir /CLIProxyAPI
+
+ARG VERSION=dev
+ARG COMMIT=none
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
 
 COPY --from=builder ./app/CLIProxyAPI /CLIProxyAPI/CLIProxyAPI
 

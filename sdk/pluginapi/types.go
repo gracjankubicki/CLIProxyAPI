@@ -151,6 +151,9 @@ type Capabilities struct {
 	ResponseInterceptor ResponseInterceptor
 	// StreamChunkInterceptor rewrites successful HTTP stream chunks before downstream delivery.
 	StreamChunkInterceptor StreamChunkInterceptor
+	// ReasoningReplayPlugin restores provider-owned reasoning before upstream execution
+	// and observes raw provider responses before downstream translation.
+	ReasoningReplayPlugin ReasoningReplayPlugin
 	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
 	WebSocketResponseObserver WebSocketResponseObserver
 	// ThinkingApplier applies validated thinking configuration to provider payloads.
@@ -1210,6 +1213,21 @@ type StreamChunkInterceptor interface {
 	InterceptStreamChunk(context.Context, StreamChunkInterceptRequest) (StreamChunkInterceptResponse, error)
 }
 
+// ReasoningReplayPlugin owns an optional provider reasoning replay policy.
+// The host routes observations and completion only to the plugin that handled PrepareReasoningReplay.
+type ReasoningReplayPlugin interface {
+	PrepareReasoningReplay(context.Context, ReasoningReplayPrepareRequest) (ReasoningReplayPrepareResponse, error)
+	ObserveReasoningReplay(context.Context, ReasoningReplayObservation) error
+	CompleteReasoningReplay(context.Context, ReasoningReplayCompletion) error
+}
+
+// ReasoningReplayHost is the executor-facing interface implemented by the plugin host.
+type ReasoningReplayHost interface {
+	PrepareReasoningReplay(context.Context, ReasoningReplayPrepareRequest) ReasoningReplayPrepareResponse
+	ObserveReasoningReplay(context.Context, ReasoningReplayObservation)
+	CompleteReasoningReplay(context.Context, ReasoningReplayCompletion)
+}
+
 // WebSocketResponseObserver observes upstream WebSocket response events received during execution.
 type WebSocketResponseObserver interface {
 	ObserveWebSocketResponseEvent(context.Context, WebSocketResponseEvent) error
@@ -1429,6 +1447,57 @@ type StreamChunkInterceptResponse struct {
 	// DropChunk skips delivery of the current payload chunk and prevents it from entering HistoryChunks.
 	// Header updates returned with DropChunk still apply to the interceptor chain state.
 	DropChunk bool
+}
+
+// ReasoningReplayPrepareRequest describes a fully translated provider request.
+// It never contains credential secrets. AuthID is the opaque host credential identity.
+type ReasoningReplayPrepareRequest struct {
+	RequestID         string
+	AuthID            string
+	AuthProvider      string
+	AuthKind          string
+	SessionID         string
+	SourceFormat      string
+	ToFormat          string
+	Model             string
+	Stream            bool
+	Headers           http.Header
+	OriginalRequest   []byte
+	TranslatedRequest []byte
+	Metadata          map[string]any
+}
+
+// ReasoningReplayPrepareResponse returns a replay decision for one execution attempt.
+type ReasoningReplayPrepareResponse struct {
+	Handled         bool
+	Body            []byte
+	Terminate       bool
+	StatusCode      int
+	ResponseHeaders http.Header
+	ResponseBody    []byte
+}
+
+// ReasoningReplayObservation carries one raw provider response body or stream event.
+type ReasoningReplayObservation struct {
+	RequestID string
+	Body      []byte
+}
+
+// ReasoningReplayOutcome identifies how the provider execution ended.
+type ReasoningReplayOutcome string
+
+const (
+	ReasoningReplayOutcomeSucceeded ReasoningReplayOutcome = "succeeded"
+	ReasoningReplayOutcomeFailed    ReasoningReplayOutcome = "failed"
+	ReasoningReplayOutcomeCanceled  ReasoningReplayOutcome = "canceled"
+)
+
+// ReasoningReplayCompletion is the terminal event for a handled replay request.
+type ReasoningReplayCompletion struct {
+	RequestID  string
+	Outcome    ReasoningReplayOutcome
+	StatusCode int
+	Error      string
 }
 
 // WebSocketResponseEvent describes an upstream WebSocket response event received during execution.

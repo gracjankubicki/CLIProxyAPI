@@ -1386,6 +1386,7 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 type SessionAffinitySelector struct {
 	fallback          Selector
 	cache             *SessionCache
+	sharedCache       bool
 	matcher           *cliproxysession.MerklePrefixMatcher
 	subagentAffinity  bool
 	rebindOnQuotaOnly bool
@@ -1551,6 +1552,9 @@ type SessionAffinityConfig struct {
 	TTL              time.Duration
 	SubagentAffinity *bool
 	RebindOn         string
+	// Cache, when set, is an externally owned session cache shared across
+	// selector rebuilds. The selector applies TTL to it but never stops it.
+	Cache *SessionCache
 }
 
 // NewSessionAffinitySelector creates a new session-aware selector.
@@ -1574,9 +1578,17 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 		subagentAffinity = *cfg.SubagentAffinity
 	}
 	rebindMode := normalizeSessionAffinityRebindOn(cfg.RebindOn)
+	cache := cfg.Cache
+	sharedCache := cache != nil
+	if sharedCache {
+		cache.SetTTL(cfg.TTL)
+	} else {
+		cache = NewSessionCache(cfg.TTL)
+	}
 	return &SessionAffinitySelector{
 		fallback:          cfg.Fallback,
-		cache:             NewSessionCache(cfg.TTL),
+		cache:             cache,
+		sharedCache:       sharedCache,
 		matcher:           cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
 		subagentAffinity:  subagentAffinity,
 		rebindOnQuotaOnly: rebindMode == SessionAffinityRebindOnQuota,
@@ -2099,7 +2111,7 @@ func (s *SessionAffinitySelector) Stop() {
 	if s == nil {
 		return
 	}
-	if s.cache != nil {
+	if s.cache != nil && !s.sharedCache {
 		s.cache.Stop()
 	}
 	if s.matcher != nil {

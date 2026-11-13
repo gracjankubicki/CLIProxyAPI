@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/statefile"
 )
 
 const (
@@ -40,6 +42,8 @@ type SessionCache struct {
 	stopOnce         sync.Once
 	sessionGroups    map[string]map[string]struct{}
 	bindingSequence  uint64
+	// writer persists bindings to a local state file when set at startup.
+	writer *statefile.Writer
 }
 
 // NewSessionCache creates a cache with the specified TTL.
@@ -226,6 +230,7 @@ func (c *SessionCache) replaceAliasGroupsLocked(authID string, expiresAt time.Ti
 		c.entries[alias] = entry
 	}
 	c.evictionElements[primaryKey] = c.evictionOrder.PushBack(primaryKey)
+	c.markDirtyLocked()
 	if c.maxEntries > 0 && len(c.entries) > c.maxEntries {
 		c.evictExcessLocked()
 	}
@@ -254,6 +259,7 @@ func (c *SessionCache) removeAliasGroupLocked(entry sessionEntry) {
 	}
 	primaryKey := entry.aliases[0]
 	if currentGroup, ok := c.groups[primaryKey]; ok && sameSessionEntryGroup(currentGroup, entry) {
+		c.markDirtyLocked()
 		delete(c.groups, primaryKey)
 		if groups := c.sessionGroups[entry.binding.sessionID]; groups != nil {
 			delete(groups, primaryKey)
@@ -475,7 +481,9 @@ func (c *SessionCache) Stop() {
 }
 
 func (c *SessionCache) cleanupLoop() {
+	c.mu.RLock()
 	interval := c.ttl / 2
+	c.mu.RUnlock()
 	if interval < time.Millisecond {
 		interval = time.Millisecond
 	}

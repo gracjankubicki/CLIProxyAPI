@@ -408,6 +408,32 @@ func TestConvertOpenAIResponsesRequestToClaude_DropsIncompatibleReasoningSignatu
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToClaude_PreservesCompactionBlock(t *testing.T) {
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]},
+			{"type":"compaction","content":"compressed context","encrypted_content":"opaque-compaction"}
+		]
+	}`)
+
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	if err != nil {
+		t.Fatalf("ConvertOpenAIResponsesRequestToClaude error: %v", err)
+	}
+	root := ojson.ParseBytes(out)
+	block := root.Get("messages.1.content.0")
+	if got := block.Get("type").String(); got != "compaction" {
+		t.Fatalf("compaction type = %q, want compaction. Output: %s", got, string(out))
+	}
+	if got := block.Get("content").String(); got != "compressed context" {
+		t.Fatalf("compaction content = %q, want compressed context", got)
+	}
+	if got := block.Get("encrypted_content").String(); got != "opaque-compaction" {
+		t.Fatalf("compaction encrypted_content = %q, want opaque-compaction", got)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_GroupsAssistantAndToolResultTurns(t *testing.T) {
 	rawSignature, expectedSignature := testClaudeResponsesThinkingSignature(t)
 	raw := []byte(`{
@@ -2117,6 +2143,28 @@ func TestConvertOpenAIResponsesRequestToClaude_FableOnlyAssistantMessageYieldsFa
 	}
 	if got := messages[0].Get("role").String(); got != "user" {
 		t.Fatalf("expected role = user, got %q", got)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_FablePreservesTrailingCompaction(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-fable-5",
+		"input": [
+			{"type": "message", "role": "user", "content": "continue"},
+			{"type": "compaction", "content": "compressed context", "encrypted_content": "opaque-compaction"}
+		]
+	}`)
+	out, err := ConvertOpenAIResponsesRequestToClaude("claude-fable-5", raw, false)
+	if err != nil {
+		t.Fatalf("ConvertOpenAIResponsesRequestToClaude error: %v", err)
+	}
+	messages := ojson.GetBytes(out, "messages").Array()
+	if len(messages) != 2 {
+		t.Fatalf("expected user message and trailing compaction, got %d: %s", len(messages), string(out))
+	}
+	compaction := messages[1].Get("content.0")
+	if got := compaction.Get("type").String(); got != "compaction" {
+		t.Fatalf("trailing content type = %q, want compaction. Output: %s", got, string(out))
 	}
 }
 

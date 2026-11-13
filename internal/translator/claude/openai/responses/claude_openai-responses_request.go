@@ -343,6 +343,7 @@ func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string
 	emittedToolResults := map[string]struct{}{}
 	emittedRawToolUses := map[string]struct{}{}
 	unmappedItemTypes := map[string]int{}
+	hadReasoningInput := false
 	webSearchHistory := scanResponsesWebSearchHistory(inputItems)
 
 	for itemIndex, item := range inputItems {
@@ -524,7 +525,18 @@ func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string
 			}
 
 		case "reasoning":
-			appendReasoning(convertResponsesReasoningToClaudeThinking(item, preserveEmptyThinkingBlocks))
+			reasoningPart := convertResponsesReasoningToClaudeThinking(item, preserveEmptyThinkingBlocks)
+			if len(reasoningPart) > 0 {
+				hadReasoningInput = true
+			} else if _, compatible := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderClaude, item.Get("encrypted_content").String()); compatible {
+				hadReasoningInput = true
+			}
+			appendReasoning(reasoningPart)
+
+		case "compaction":
+			if compactionPart := convertResponsesCompactionToClaude(item); len(compactionPart) > 0 {
+				appendParts("assistant", compactionPart)
+			}
 
 		case "function_call", "custom_tool_call":
 			// Map to assistant tool_use. Freeform custom input is wrapped in an
@@ -672,7 +684,9 @@ func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string
 	if len(unmappedItemTypes) > 0 {
 		log.Warnf("responses->claude: dropped input items of unmapped types %v (model=%s)", unmappedItemTypes, modelName)
 	}
-	hadMessages := len(messageBlocks) > 0
+	// hadReasoningInput utrzymuje ture zlozona wylacznie z reasoning: bez niego
+	// zostalaby uznana za pusta i replay stracilby podpisy.
+	hadMessages := len(messageBlocks) > 0 || hadReasoningInput
 	if !preserveEmptyThinkingBlocks {
 		messageBlocks = stripTrailingClaudeThinkingBlocks(messageBlocks)
 	}
@@ -806,7 +820,6 @@ func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string
 
 		}
 	}
-
 	// parallel_tool_calls=false maps to Anthropic's disable_parallel_tool_use,
 	// mirroring the Chat Completions translator. It is not added when the
 	// effective choice is none, when no tool survived conversion, or when a
@@ -983,8 +996,8 @@ func claudeBlocksAreAllText(blocks [][]byte) bool {
 // dropUnsupportedClaudeAssistantPrefill removes a trailing assistant message for
 // Claude model families that reject assistant message prefill (e.g., Fable,
 // Opus 5, Sonnet 4.6, Haiku 5.5), except when the message ends on a server-tool
-// block (server_tool_use or web_search_tool_result) from a pause_turn response
-// that the continuation must send back.
+// block from a pause_turn response that the continuation must send back, or
+// carries a compaction block, which is conversation state rather than prefill.
 func dropUnsupportedClaudeAssistantPrefill(modelName string, messages [][]byte) [][]byte {
 	if !claudeModelRejectsAssistantPrefill(modelName) || len(messages) == 0 {
 		return messages
@@ -995,6 +1008,11 @@ func dropUnsupportedClaudeAssistantPrefill(modelName string, messages [][]byte) 
 	}
 	if claudeAssistantMessageEndsWithPausedServerTool(last) {
 		return messages
+	}
+	for _, part := range last.Get("content").Array() {
+		if strings.EqualFold(strings.TrimSpace(part.Get("type").String()), "compaction") {
+			return messages
+		}
 	}
 	return messages[:len(messages)-1]
 }
@@ -1133,8 +1151,11 @@ func responsesSystemUnsupportedBlockDoc(part ojson.Result) *ojson.Doc {
 // to another provider is dropped rather than replayed as an unsigned block.
 // Compatibility mode explicitly keeps the original opaque value as the
 // signature for upstreams that use a provider-specific signature format.
-// Anthropic does not verify the text against the signature, which is what makes
-// the summarized text safe to restore alongside it.
+// Anthropic does not verify the text against the signature (measured live on
+// 2026-10-06 for Opus 5 and Opus 5.5: original, altered and empty text all
+// accepted), which is what makes the summarized text safe to restore alongside
+// it. The local replay plugin still swaps in the exact signed block whenever it
+// has one cached.
 func convertResponsesReasoningToClaudeThinking(item ojson.Result, preserveEmptyThinkingBlocks ...bool) []byte {
 	encrypted := item.Get("encrypted_content").String()
 	preserveEmpty := len(preserveEmptyThinkingBlocks) > 0 && preserveEmptyThinkingBlocks[0]
@@ -1220,6 +1241,22 @@ func claudeThinkingSeparatorForToolUse(parts [][]byte) []byte {
 		}
 	}
 	return nil
+}
+
+func convertResponsesCompactionToClaude(item ojson.Result) []byte {
+	doc := ojson.NewDocString(`{"type":"compaction","content":null,"encrypted_content":null}`)
+	for _, field := range []string{"content", "encrypted_content"} {
+		value := item.Get(field)
+		if !value.Exists() {
+			continue
+		}
+		if value.Type == ojson.String {
+			_ = doc.Set(field, strings.Clone(value.String()))
+		} else if ojson.Valid(value.Raw) {
+			_ = doc.SetRawBytes(field, []byte(value.Raw))
+		}
+	}
+	return doc.Bytes()
 }
 
 func applyResponsesToolResultContentDoc(toolResultDoc *ojson.Doc, output ojson.Result) {

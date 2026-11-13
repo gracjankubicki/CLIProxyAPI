@@ -167,6 +167,144 @@ func TestConvertClaudeResponseToOpenAIResponses_RedactedThinkingBecomesMarkedRea
 	}
 }
 
+func TestConvertClaudeResponseToOpenAIResponses_PreservesCompactionBlock(t *testing.T) {
+	chunks := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_123","usage":{"input_tokens":1,"output_tokens":0}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"compaction","encrypted_content":"opaque-compaction"}}`),
+		[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"compressed context"}}`),
+		[]byte(`data: {"type":"content_block_stop","index":0}`),
+		[]byte(`data: {"type":"message_stop"}`),
+	}
+
+	var param any
+	var outputs [][]byte
+	for _, chunk := range chunks {
+		outputs = append(outputs, ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", nil, nil, chunk, &param)...)
+	}
+
+	var compactionDone, completed ojson.Result
+	for _, output := range outputs {
+		event, data := parseClaudeResponsesSSEEvent(t, output)
+		if event == "response.output_item.done" && data.Get("item.type").String() == "compaction" {
+			compactionDone = data
+		}
+		if event == "response.completed" {
+			completed = data
+		}
+	}
+	if !compactionDone.Exists() {
+		t.Fatal("expected compaction output_item.done event")
+	}
+	if got := compactionDone.Get("item.content").String(); got != "compressed context" {
+		t.Fatalf("compaction done content = %q, want compressed context", got)
+	}
+	if got := compactionDone.Get("item.encrypted_content").String(); got != "opaque-compaction" {
+		t.Fatalf("compaction done encrypted_content = %q, want opaque-compaction", got)
+	}
+	if got := completed.Get("response.output.0.type").String(); got != "compaction" {
+		t.Fatalf("completed output type = %q, want compaction", got)
+	}
+}
+
+func TestConvertClaudeResponseToOpenAIResponses_CompactionMaxTokensIsIncompleteWithoutBlockStop(t *testing.T) {
+	chunks := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_compaction_incomplete","usage":{"input_tokens":1,"output_tokens":0}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"compaction","encrypted_content":"opaque-compaction"}}`),
+		[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"partial compacted context"}}`),
+		[]byte(`data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":128000}}`),
+		[]byte(`data: {"type":"message_stop"}`),
+	}
+
+	var param any
+	var compactionDone, incomplete ojson.Result
+	for _, chunk := range chunks {
+		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", nil, nil, chunk, &param) {
+			event, data := parseClaudeResponsesSSEEvent(t, output)
+			if event == "response.output_item.done" && data.Get("item.type").String() == "compaction" {
+				compactionDone = data
+			}
+			if event == "response.incomplete" {
+				incomplete = data
+			}
+		}
+	}
+
+	if got := compactionDone.Get("item.status").String(); got != "incomplete" {
+		t.Fatalf("compaction item status = %q, want incomplete; event=%s", got, compactionDone.Raw)
+	}
+	if got := compactionDone.Get("item.content").String(); got != "partial compacted context" {
+		t.Fatalf("compaction content = %q, want preserved partial content", got)
+	}
+	if got := incomplete.Get("response.status").String(); got != "incomplete" {
+		t.Fatalf("response status = %q, want incomplete; event=%s", got, incomplete.Raw)
+	}
+	if got := incomplete.Get("response.output.0.status").String(); got != "incomplete" {
+		t.Fatalf("response compaction status = %q, want incomplete; event=%s", got, incomplete.Raw)
+	}
+}
+
+func TestConvertClaudeResponseToOpenAIResponses_FinalizesCompactionBeforeFollowingBlock(t *testing.T) {
+	chunks := [][]byte{
+		[]byte(`data: {"type":"message_start","message":{"id":"msg_compaction_then_text","usage":{"input_tokens":1,"output_tokens":0}}}`),
+		[]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"compaction","encrypted_content":"opaque-compaction"}}`),
+		[]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"compacted context"}}`),
+		[]byte(`data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`),
+		[]byte(`data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"continued"}}`),
+		[]byte(`data: {"type":"content_block_stop","index":1}`),
+		[]byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`),
+		[]byte(`data: {"type":"message_stop"}`),
+	}
+
+	var param any
+	var compactionDone, completed ojson.Result
+	for _, chunk := range chunks {
+		for _, output := range ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", nil, nil, chunk, &param) {
+			event, data := parseClaudeResponsesSSEEvent(t, output)
+			if event == "response.output_item.done" && data.Get("item.type").String() == "compaction" {
+				compactionDone = data
+			}
+			if event == "response.completed" {
+				completed = data
+			}
+		}
+	}
+
+	if got := compactionDone.Get("item.status").String(); got != "completed" {
+		t.Fatalf("compaction item status = %q, want completed; event=%s", got, compactionDone.Raw)
+	}
+	if got := completed.Get("response.output.0.type").String(); got != "compaction" {
+		t.Fatalf("response output[0] type = %q, want compaction; event=%s", got, completed.Raw)
+	}
+	if got := completed.Get("response.output.1.type").String(); got != "message" {
+		t.Fatalf("response output[1] type = %q, want message; event=%s", got, completed.Raw)
+	}
+}
+
+func TestConvertClaudeResponseToOpenAIResponsesNonStream_CompactionMaxTokensIsIncomplete(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_compaction_nonstream_incomplete","usage":{"input_tokens":1,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"compaction","encrypted_content":"opaque-compaction"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"partial compacted context"}}`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":128000}}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, []byte(raw), nil)
+	root := ojson.ParseBytes(out)
+	if got := root.Get("status").String(); got != "incomplete" {
+		t.Fatalf("status = %q, want incomplete; response=%s", got, out)
+	}
+	if got := root.Get("output.0.type").String(); got != "compaction" {
+		t.Fatalf("output type = %q, want compaction; response=%s", got, out)
+	}
+	if got := root.Get("output.0.status").String(); got != "incomplete" {
+		t.Fatalf("compaction status = %q, want incomplete; response=%s", got, out)
+	}
+	if got := root.Get("output.0.content").String(); got != "partial compacted context" {
+		t.Fatalf("compaction content = %q, want preserved partial content", got)
+	}
+}
+
 func TestConvertClaudeResponseToOpenAIResponsesNonStream_RedactedThinkingBecomesMarkedReasoningItem(t *testing.T) {
 	const data = "EroBCkYIBRgCKkA"
 	raw := strings.Join([]string{
@@ -184,6 +322,28 @@ func TestConvertClaudeResponseToOpenAIResponsesNonStream_RedactedThinkingBecomes
 	want := ClaudeResponsesRedactedThinkingPrefix + data
 	if got := parsed.Get("output.0.encrypted_content").String(); got != want {
 		t.Fatalf("output.0.encrypted_content = %q, want %q", got, want)
+	}
+}
+
+func TestConvertClaudeResponseToOpenAIResponsesNonStream_PreservesCompactionBlock(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"msg_123","usage":{"input_tokens":1,"output_tokens":0}}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"compaction","encrypted_content":"opaque-compaction"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"compressed context"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	out := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-test", nil, nil, []byte(raw), nil)
+	parsed := ojson.ParseBytes(out)
+	if got := parsed.Get("output.0.type").String(); got != "compaction" {
+		t.Fatalf("output.0.type = %q, want compaction; body=%s", got, out)
+	}
+	if got := parsed.Get("output.0.content").String(); got != "compressed context" {
+		t.Fatalf("output.0.content = %q, want compressed context", got)
+	}
+	if got := parsed.Get("output.0.encrypted_content").String(); got != "opaque-compaction" {
+		t.Fatalf("output.0.encrypted_content = %q, want opaque-compaction", got)
 	}
 }
 
@@ -2717,5 +2877,38 @@ func TestConvertClaudeResponseToOpenAIResponses_MultiHopFallbackChainPreservesAl
 	nonStreamHops := ojson.GetBytesNoCopy(nonStreamOut, "fallbacks").Array()
 	if len(nonStreamHops) != 2 || nonStreamHops[0].Get("output_index").Int() != 1 || nonStreamHops[1].Get("output_index").Int() != 2 {
 		t.Fatalf("non-stream multi-hop fallbacks = %s, want 2 hops with output_index 1 and 2", ojson.GetBytesNoCopy(nonStreamOut, "fallbacks").Raw)
+	}
+}
+
+// Compaction deltas may be views into a buffer the caller reuses for the next
+// chunk; the translator must own the accumulated text.
+func TestConvertClaudeResponseToOpenAIResponses_CompactionDeltaOwnsReusedBuffer(t *testing.T) {
+	var param any
+	convert := func(chunk []byte) [][]byte {
+		return ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-test", nil, nil, chunk, &param)
+	}
+	var outputs [][]byte
+	outputs = append(outputs, convert([]byte(`data: {"type":"message_start","message":{"id":"msg_123","usage":{"input_tokens":1,"output_tokens":0}}}`))...)
+	outputs = append(outputs, convert([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"compaction"}}`))...)
+	buffer := []byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"compressed context","encrypted_content":"opaque-compaction"}}`)
+	outputs = append(outputs, convert(buffer)...)
+	for i := range buffer {
+		buffer[i] = 'X'
+	}
+	outputs = append(outputs, convert([]byte(`data: {"type":"content_block_stop","index":0}`))...)
+	outputs = append(outputs, convert([]byte(`data: {"type":"message_stop"}`))...)
+
+	var done ojson.Result
+	for _, output := range outputs {
+		event, data := parseClaudeResponsesSSEEvent(t, output)
+		if event == "response.output_item.done" && data.Get("item.type").String() == "compaction" {
+			done = data
+		}
+	}
+	if got := done.Get("item.content").String(); got != "compressed context" {
+		t.Fatalf("compaction content after buffer reuse = %q, want compressed context", got)
+	}
+	if got := done.Get("item.encrypted_content").String(); got != "opaque-compaction" {
+		t.Fatalf("compaction encrypted_content after buffer reuse = %q, want opaque-compaction", got)
 	}
 }

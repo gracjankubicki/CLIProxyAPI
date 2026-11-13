@@ -351,6 +351,33 @@ func TestClaudeExecutor_CountTokensRestoresWebSearchResultsWhenEnabled(t *testin
 	}
 }
 
+// Two OAuth accounts of one organization share a session's search results;
+// an account of another organization does not.
+func TestClaudeExecutor_WebSearchResultCacheSharedWithinOrganization(t *testing.T) {
+	cfg := enabledClaudeWebSearchCacheConfig()
+	orgA1 := &cliproxyauth.Auth{ID: "claude-org-a-1", Metadata: map[string]any{"organization_uuid": "org-a"}}
+	orgA2 := &cliproxyauth.Auth{ID: "claude-org-a-2", Metadata: map[string]any{"organization_uuid": "org-a"}}
+	orgB := &cliproxyauth.Auth{ID: "claude-org-b", Metadata: map[string]any{"organization_uuid": "org-b"}}
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[stream], func(t *testing.T) {
+			bodies := runClaudeWebSearchScenario(t, cfg, stream, []claudeWebSearchExecutorRun{
+				{sessionID: "session-org", auth: orgA1, input: claudeWebSearchExecutorUser},
+				{sessionID: "session-org", auth: orgA2, input: claudeWebSearchExecutorHistory},
+				{sessionID: "session-org", auth: orgB, input: claudeWebSearchExecutorHistory},
+			})
+			if len(bodies) != 3 {
+				t.Fatalf("upstream requests = %d, want 3", len(bodies))
+			}
+			if got := claudeWebSearchResultContent(t, bodies[1]); got != claudeWebSearchExecutorResults {
+				t.Fatalf("same organization, other account: content = %s, want original results", got)
+			}
+			if got := claudeWebSearchResultContent(t, bodies[2]); got != "[]" {
+				t.Fatalf("other organization: content = %s, want []", got)
+			}
+		})
+	}
+}
+
 func TestClaudeExecutor_WebSearchResultCacheScopesByCredential(t *testing.T) {
 	cfg := enabledClaudeWebSearchCacheConfig()
 	credA := &cliproxyauth.Auth{ID: "claude-cred-a"}

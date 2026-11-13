@@ -14,9 +14,10 @@ const (
 	// (ChunkIndex >= 0); those fields remain on StreamChunkHeaderInitIndex only.
 	// Plugins that still need per-chunk request bodies should keep schema_version < 3.
 	// Version 4 adds upstream WebSocket response event observation.
-	// Version 5 omits HistoryChunks on payload stream chunks (ChunkIndex >= 0);
-	// those fields remain on StreamChunkHeaderInitIndex only. Plugins that still need
-	// per-chunk history chunks should keep schema_version < 5.
+	// Version 5 omits HistoryChunks on payload stream chunks (ChunkIndex >= 0)
+	// and adds the optional reasoning replay execution lifecycle. History fields
+	// remain on StreamChunkHeaderInitIndex. Plugins that still need per-chunk
+	// history chunks should keep schema_version < 5.
 	// Version 6 preserves raw JSON bodies for plugin management responses.
 	// Plugins that still require HTML entity escaping on JSON response strings
 	// should keep schema_version < 6.
@@ -47,6 +48,9 @@ const (
 	// SchemaVersionStreamChunkOmitHistory is the first schema version that omits
 	// history chunks on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitHistory uint32 = 5
+	// SchemaVersionReasoningReplay is the first schema version that supports
+	// the reasoning replay execution lifecycle.
+	SchemaVersionReasoningReplay uint32 = 5
 	// SchemaVersionRawManagementResponse is the first schema version where plugin
 	// management JSON responses are preserved without HTML-escaping strings.
 	SchemaVersionRawManagementResponse uint32 = 6
@@ -111,7 +115,10 @@ const (
 	MethodResponseInterceptAfter       = "response.intercept_after"
 	MethodResponseInterceptStreamChunk = "response.intercept_stream_chunk"
 
-	MethodWebSocketResponseEvent = "websocket.response_event"
+	MethodReasoningReplayPrepare  = "reasoning_replay.prepare"
+	MethodReasoningReplayObserve  = "reasoning_replay.observe"
+	MethodReasoningReplayComplete = "reasoning_replay.complete"
+	MethodWebSocketResponseEvent  = "websocket.response_event"
 
 	MethodThinkingIdentifier = "thinking.identifier"
 	MethodThinkingApply      = "thinking.apply"

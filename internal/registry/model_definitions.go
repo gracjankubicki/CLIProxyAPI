@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	codexBuiltinAstraModelID           = "gpt-6-astra"
 	codexBuiltinImage15ModelID         = "gpt-image-1.5"
 	codexBuiltinImageModelID           = "gpt-image-2"
 	codexBuiltinImage25FlareModelID    = "gpt-image-2.5-flare"
@@ -65,7 +66,7 @@ func GetAIStudioModels() []*ModelInfo {
 
 // GetCodexFreeModels returns model definitions for the Codex free plan tier.
 func GetCodexFreeModels() []*ModelInfo {
-	return WithCodexBuiltins(cloneModelInfos(getModels().CodexFree))
+	return withCodexImageBuiltins(cloneModelInfos(getModels().CodexFree))
 }
 
 // GetCodexTeamModels returns model definitions for the Codex team plan tier.
@@ -248,10 +249,31 @@ func GetXAIModels() []*ModelInfo {
 	return WithXAIBuiltins(cloneModelInfos(getModels().XAI))
 }
 
-// WithCodexBuiltins injects hard-coded Codex-only model definitions that should
-// not depend on remote models.json updates. Built-ins replace any matching IDs
-// already present in the provided slice.
+// WithCodexBuiltins applies local Codex model policy and injects hard-coded
+// image models that should not depend on remote models.json updates. Native
+// Astra metadata is preserved when present; the fallback only keeps Astra
+// available when an older or incomplete catalog omits it. Astra is no longer
+// account-specific: both Codex accounts serve it, so it gets a shared route
+// next to the prefixed ones, like every other Codex model.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
+	astra := codexBuiltinAstraModelInfo()
+	for _, model := range models {
+		if model == nil || !strings.EqualFold(strings.TrimSpace(model.ID), codexBuiltinAstraModelID) {
+			continue
+		}
+		astra = cloneModelInfo(model)
+		if astra.Thinking == nil {
+			astra.Thinking = &ThinkingSupport{}
+		}
+		if !containsStringFold(astra.Thinking.Levels, "ultra") {
+			astra.Thinking.Levels = append(astra.Thinking.Levels, "ultra")
+		}
+		break
+	}
+	return withCodexImageBuiltins(upsertModelInfos(models, astra))
+}
+
+func withCodexImageBuiltins(models []*ModelInfo) []*ModelInfo {
 	return upsertModelInfos(models,
 		codexBuiltinImage15ModelInfo(),
 		codexBuiltinImageModelInfo(),
@@ -262,6 +284,15 @@ func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
 		codexBuiltinImage26SunburstModelInfo(),
 		codexBuiltinImage26ModelInfo(),
 	)
+}
+
+func containsStringFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), target) {
+			return true
+		}
+	}
+	return false
 }
 
 // WithXAIBuiltins injects hard-coded xAI image, video, and speech model definitions
@@ -276,6 +307,23 @@ func normalizeAntigravityCapabilityModelID(modelID string) string {
 		modelID = strings.TrimSpace(modelID[:open])
 	}
 	return modelID
+}
+
+func codexBuiltinAstraModelInfo() *ModelInfo {
+	return &ModelInfo{
+		ID:                  codexBuiltinAstraModelID,
+		Object:              "model",
+		OwnedBy:             "openai",
+		Type:                "openai",
+		DisplayName:         "GPT-6 Astra",
+		Version:             codexBuiltinAstraModelID,
+		Description:         "OpenAI GPT-6 Astra model.",
+		ContextLength:       272000,
+		MaxCompletionTokens: 128000,
+		Thinking: &ThinkingSupport{
+			Levels: []string{"low", "medium", "high", "xhigh", "max", "ultra"},
+		},
+	}
 }
 
 func codexBuiltinImage15ModelInfo() *ModelInfo {
@@ -639,7 +687,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.Gemini,
 		data.Vertex,
 		data.AIStudio,
-		data.CodexPro,
+		WithCodexBuiltins(data.CodexPro),
 		data.Kimi,
 		data.Antigravity,
 		data.XAI,

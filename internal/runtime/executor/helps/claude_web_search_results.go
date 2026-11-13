@@ -3,6 +3,8 @@ package helps
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -125,6 +127,7 @@ func RestoreClaudeWebSearchResultsContextDoc(ctx context.Context, doc *ojson.Doc
 	}
 	trimmedSessionKey := strings.TrimSpace(sessionKey)
 	restored := 0
+	missing := 0
 	droppedCitations := 0
 	turnHasEmptyWebSearchResult := false
 	for i, message := range messages.Array() {
@@ -151,6 +154,7 @@ func RestoreClaudeWebSearchResultsContextDoc(ctx context.Context, doc *ojson.Doc
 					}
 				}
 			}
+			missing++
 			turnHasEmptyWebSearchResult = true
 		}
 		if !turnHasEmptyWebSearchResult {
@@ -163,6 +167,12 @@ func RestoreClaudeWebSearchResultsContextDoc(ctx context.Context, doc *ojson.Doc
 			dropped := stripClaudeWebSearchCitationsDoc(doc, fmt.Sprintf("messages.%d.content.%d", i, j), block.Get("citations"))
 			droppedCitations += dropped
 		}
+	}
+	// Diagnostics (local patch): one info line per request that carried result
+	// blocks to restore. Counts and a short hash of the session only, never content.
+	if restored+missing > 0 {
+		sum := sha256.Sum256([]byte(trimmedSessionKey))
+		log.Infof("claude web search results: restore | restored=%d missing=%d dropped_citations=%d session=%s", restored, missing, droppedCitations, hex.EncodeToString(sum[:])[:12])
 	}
 	if restored > 0 {
 		log.Debugf("claude web search results: restored %d result block(s) from cache", restored)

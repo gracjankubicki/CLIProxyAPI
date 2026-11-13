@@ -148,6 +148,13 @@ func TestClientCodexWebSearchResultCache(t *testing.T) {
 			wantTTL:   DefaultCodexWebSearchResultCacheTTL,
 			wantLimit: DefaultCodexWebSearchResultCacheLimit,
 		},
+		{
+			name:      "state file",
+			raw:       "client: {codex: {web-search-result-cache: {enabled: true, ttl: 168h, limit: 8192, state-file: \" .cliproxy-state/claude-web-search-results.state \"}}}\n",
+			want:      CodexWebSearchResultCacheConfig{Enabled: true, TTL: "168h", Limit: 8192, StateFile: ".cliproxy-state/claude-web-search-results.state"},
+			wantTTL:   168 * time.Hour,
+			wantLimit: 8192,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if errValidate := ValidateV8Config([]byte(tc.raw)); errValidate != nil {
@@ -219,6 +226,8 @@ func TestClientCodexWebSearchResultCache(t *testing.T) {
 		"client: {codex: {web-search-result-cache: {ttl: true}}}\n",
 		"client: {codex: {web-search-result-cache: {limit: -1}}}\n",
 		"client: {codex: {web-search-result-cache: {limit: invalid}}}\n",
+		"client: {codex: {web-search-result-cache: {state-file: 5}}}\n",
+		"client: {codex: {web-search-result-cache: {state-file: [a]}}}\n",
 	} {
 		if errValidate := ValidateV8Config([]byte(raw)); errValidate == nil {
 			t.Fatalf("accepted invalid config %q", raw)
@@ -230,6 +239,34 @@ func TestClientCodexWebSearchResultCache(t *testing.T) {
 }
 
 func TestClientCodexWebSearchResultCacheSave(t *testing.T) {
+	t.Run("routing session affinity state file", func(t *testing.T) {
+		raw := "routing: {session-affinity: true, session-affinity-ttl: 1h, session-affinity-rebind-on: quota, session-affinity-state-file: .cliproxy-state/session-affinity.state}\n"
+		if errValidate := ValidateV8Config([]byte(raw)); errValidate != nil {
+			t.Fatalf("validate: %v", errValidate)
+		}
+		cfg, errParse := ParseConfigBytes([]byte(raw))
+		if errParse != nil {
+			t.Fatalf("parse: %v", errParse)
+		}
+		if got := cfg.Routing.SessionAffinityStateFile; got != ".cliproxy-state/session-affinity.state" {
+			t.Fatalf("SessionAffinityStateFile = %q", got)
+		}
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if errWrite := os.WriteFile(path, []byte(raw), 0600); errWrite != nil {
+			t.Fatal(errWrite)
+		}
+		if errSave := SaveConfigPreserveComments(path, cfg, true); errSave != nil {
+			t.Fatalf("save: %v", errSave)
+		}
+		loaded, errLoad := LoadConfig(path)
+		if errLoad != nil {
+			t.Fatalf("load: %v", errLoad)
+		}
+		if loaded.Routing.SessionAffinityStateFile != cfg.Routing.SessionAffinityStateFile {
+			t.Fatalf("saved state file = %q", loaded.Routing.SessionAffinityStateFile)
+		}
+	})
+
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if errWrite := os.WriteFile(path, []byte("config-version: 8\n"), 0600); errWrite != nil {
 		t.Fatalf("write: %v", errWrite)
@@ -239,6 +276,7 @@ func TestClientCodexWebSearchResultCacheSave(t *testing.T) {
 		{Enabled: true, TTL: "30m", Limit: 128},
 		{Enabled: false, TTL: "24h", Limit: 1024},
 		{Enabled: false, TTL: "", Limit: 0},
+		{Enabled: true, TTL: "168h", Limit: 8192, StateFile: ".cliproxy-state/claude-web-search-results.state"},
 	} {
 		cfg.Client.Codex.WebSearchResultCache = want
 		if errSave := SaveConfigPreserveComments(path, cfg, true); errSave != nil {

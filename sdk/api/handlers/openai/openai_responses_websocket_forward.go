@@ -120,6 +120,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		cancel(errMsg.Error)
 		return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errTerminate
 	}
+	// failedTerminal marks that the current turn ended on a response.failed
+	// event. Once completed is set, the generic drain below is skipped, so a
+	// stream error buffered after response.failed must be recovered explicitly.
+	failedTerminal := false
 
 	for {
 		select {
@@ -176,6 +180,14 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					}
 					return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, websocket.ErrCloseSent
 				}
+				// A producer closes errs before data, so a stream error that
+				// followed a response.failed terminal is already buffered here;
+				// completed is true, so the generic drain above skipped it.
+				if failedTerminal {
+					if pendingErrMsg, hasPending := handlers.PendingStreamError(errs); hasPending {
+						return handleErr(pendingErrMsg)
+					}
+				}
 				if !completed {
 					errMsg := &interfaces.ErrorMessage{
 						StatusCode: http.StatusRequestTimeout,
@@ -228,6 +240,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					if opts.localInterrupt != nil {
 						opts.localInterrupt.reactivate()
 					}
+					failedTerminal = false
 					outputItemsByIndex = make(map[int64][]byte)
 					outputItemsFallback = nil
 					pendingToolCallIDs = make(map[string]struct{})
@@ -261,18 +274,21 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						cancel(payloadErrMsg.Error)
 						return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), payloadErrMsg, nil
 					}
-				} else if isResponsesWebsocketCompletionEvent(eventType) || eventType == "response.incomplete" {
-					// response.incomplete ends the turn too. Codex uses it, with
-					// reason "interrupted", to acknowledge response.interrupt. Closing
-					// the client socket here would block the follow-up request.
+				} else if isResponsesWebsocketCompletionEvent(eventType) || eventType == "response.incomplete" || eventType == "response.failed" {
+					// response.incomplete and response.failed end the turn too. Codex
+					// uses incomplete, with reason "interrupted", to acknowledge
+					// response.interrupt; failed carries errors such as Claude's
+					// context_length_exceeded. Closing the client socket here would
+					// block the follow-up request.
 					completed = true
 					turnEnded = true
-					completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
-					completedResponseID = responseCompletedIDFromPayload(payloads[i])
-				} else if eventType == "response.failed" {
-					// A failed response ends the turn without a completion
-					// identity; only its local-interrupt window closes.
-					turnEnded = true
+					failedTerminal = eventType == "response.failed"
+					// A failed response ends the turn but has no completion identity:
+					// it must not become a previous_response_id.
+					if !failedTerminal {
+						completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
+						completedResponseID = responseCompletedIDFromPayload(payloads[i])
+					}
 				}
 				markAPIResponseTimestamp(c)
 				if payloadErrMsg != nil {

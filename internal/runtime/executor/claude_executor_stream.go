@@ -56,6 +56,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	ctx, req, opts = e.applyNativeToolSearchFallback(ctx, auth, from, upstreamModel, req, opts)
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	to := sdktranslator.FromString("claude")
+	upstreamStream := true
 	var replayScope claudeThinkingReplayScope
 	if claudeThinkingReplayEnabled(auth, req, opts) {
 		req, replayScope = prepareClaudeThinkingReplayRequest(ctx, auth, req, opts)
@@ -91,10 +92,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	ctx = helps.WithClaudeWebSearchResultRestore(ctx, webSearchSessionKey, webSearchTTL)
 
 	isCompat := helps.APIKeyModelIsCompat(req)
-	originalTranslated, body, err := helps.TranslateRequestPairReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, req.Payload, true, isCompat)
+	originalTranslated, body, err := helps.TranslateRequestPairReturningError(ctx, opts.Headers, e.cfg, from, to, baseModel, originalPayload, req.Payload, upstreamStream, isCompat)
 	if err != nil {
 		return nil, err
 	}
+	body = helps.LimitClaudeRequestImages(body)
 	doc := ojson.NewDoc(body)
 	helps.SetStringIfDifferentDoc(doc, "model", upstreamModel)
 	helps.NormalizeClaudeToolChoiceDoc(e.upstreamRequestLogProvider(), upstreamModel, doc)
@@ -106,7 +108,6 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if rebuildMidSystemMessageEnabled(e.cfg, auth) {
 		rebuildMidSystemMessagesToTopLevelDoc(doc)
 	}
-
 	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
 	// based on client type and configuration.
 	isProbeOrHelper := isClaudeProbeOrHelperRequestDoc(doc)
@@ -163,6 +164,24 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	disableThinkingIfToolChoiceForcedDoc(doc)
 	reconcileClaudeCodeContextManagementDoc(doc, contextManagementState)
 	normalizeClaudeSamplingForUpstreamDoc(doc, confirmedClaudeCode)
+	// ExecuteStream owns the upstream transport. Set stream before and after replay
+	// preparation so the plugin sees the streaming mode and cannot change it.
+	helps.SetBoolIfDifferentDoc(doc, "stream", upstreamStream)
+	var replayAttempt *claudeReasoningReplayAttempt
+	doc, replayAttempt, err = e.prepareReasoningReplayPluginDoc(ctx, auth, req, opts, to.String(), doc, upstreamStream)
+	if err != nil {
+		if replayAttempt != nil {
+			replayAttempt.complete(ctx, err)
+		}
+		return nil, err
+	}
+	helps.SetBoolIfDifferentDoc(doc, "stream", upstreamStream)
+	replayStreamOwned := false
+	defer func() {
+		if replayAttempt != nil && !replayStreamOwned && err != nil {
+			replayAttempt.complete(ctx, err)
+		}
+	}()
 
 	// Default cache_control for translated entrypoints (Responses/Chat/Gemini) and other
 	// non-native callers. Confirmed native Claude Code owns its marker placement and must
@@ -251,6 +270,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if touchedPayloadPaths["diagnostics"] {
 		diagnosticsState = claudeDiagnosticsRequestState{}
 	}
+	// A request handled by the replay plugin keeps the executor's transport mode:
+	// the plugin accumulates the stream it was told to expect, so a payload
+	// rule rewriting stream would make it drop the turn and fail the next one.
+	// This runs before CCH signing, which must cover the final body.
+	if replayAttempt != nil {
+		helps.SetBoolIfDifferentDoc(doc, "stream", upstreamStream)
+	}
 	extraBetas, _ = extractAndRemoveBetasDoc(doc)
 	stripPromptCacheOptionsDoc(doc)
 	bodyForUpstream := doc.Bytes()
@@ -263,6 +289,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 	}
 	// Read-only validation must observe the final configured model and messages.
+	if errImages := helps.ValidateClaudeImageLimits(bodyForUpstream); errImages != nil {
+		return nil, errImages
+	}
 	if errMidSystem := validateClaudeMidSystemMessageModel(bodyForUpstream, confirmedClaudeCode, isAnthropicUpstreamBase(baseURL)); errMidSystem != nil {
 		return nil, errMidSystem
 	}
@@ -433,6 +462,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					emitResponseError(fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore))
 					return
 				}
+				if replayAttempt != nil {
+					replayAttempt.observe(ctx, restoredLine)
+				}
 				line = e.restoreResponseModel(restoredLine, req.Model)
 				event.Write(line)
 				event.WriteByte('\n')
@@ -488,6 +520,8 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		var upstreamStreamErr error
 		var eventBuf bytes.Buffer
 		upstreamCompleted := false
+		webSearchOutcomes := helps.NewClaudeWebSearchOutcomes()
+		defer func() { webSearchOutcomes.Log(upstreamCompleted) }()
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			eventBuf.Write(line)
@@ -505,7 +539,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				emitResponseError(fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore))
 				return
 			}
+			if replayAttempt != nil {
+				replayAttempt.observe(ctx, restoredLine)
+			}
 			line = e.restoreResponseModel(restoredLine, req.Model)
+			webSearchOutcomes.Observe(line)
 			helps.RecordClaudeWebSearchResultsContext(ctx, webSearchSessionKey, line, webSearchTTL, webSearchLimit)
 			chunks := sdktranslator.TranslateStream(
 				ctx,
@@ -583,6 +621,10 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	result := &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}
 	if replayScope.valid() {
 		result = wrapClaudeThinkingReplayStream(ctx, result, replayScope)
+	}
+	if replayAttempt != nil {
+		result = wrapClaudeReasoningReplayCompletion(ctx, result, replayAttempt)
+		replayStreamOwned = true
 	}
 	return result, nil
 }

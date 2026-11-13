@@ -2,8 +2,10 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -156,7 +158,36 @@ type RequestTerminatedError struct {
 }
 
 func (e *RequestTerminatedError) Error() string {
+	if e != nil && len(e.Body) > 0 {
+		if strings.HasPrefix(strings.ToLower(e.Header.Get("Content-Type")), "text/plain") {
+			if message := safeRequestTerminatedMessage(string(e.Body)); message != "" {
+				return message
+			}
+		}
+		var payload struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(e.Body, &payload) == nil {
+			if message := safeRequestTerminatedMessage(payload.Error.Message); message != "" {
+				return message
+			}
+			if message := safeRequestTerminatedMessage(payload.Message); message != "" {
+				return message
+			}
+		}
+	}
 	return "request terminated by plugin"
+}
+
+func safeRequestTerminatedMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" || len(message) > 4096 || strings.ContainsAny(message, "\x00\r\n") {
+		return ""
+	}
+	return message
 }
 
 // StatusCode returns the plugin-defined downstream HTTP status.

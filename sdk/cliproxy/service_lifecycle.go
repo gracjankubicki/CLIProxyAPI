@@ -401,6 +401,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 
 		helps.RetireProxyPoolPublisher(s.proxyPoolPublisher)
 		usage.StopDefault()
+
+		// Local state files are written last so they capture every mutation
+		// made while the HTTP server and executors were draining.
+		s.statePersistence.flush()
+		if s.sessionCache != nil {
+			s.sessionCache.Stop()
+		}
 	})
 	return shutdownErr
 }
