@@ -1,9 +1,9 @@
 package auth
 
 import (
-	"github.com/MoeForge/moego/json"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/statefile"
 	log "github.com/sirupsen/logrus"
 )

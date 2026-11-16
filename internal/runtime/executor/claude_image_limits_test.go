@@ -3,12 +3,12 @@ package executor
 import (
 	"bytes"
 	"context"
-	"github.com/MoeForge/moego/base64"
 	"image"
 	"image/png"
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"

@@ -92,9 +92,6 @@ func TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader(t *testing.T) {
 	if errExec == nil {
 		t.Fatal("authMgr.Execute returned nil error")
 	}
-	if got := coreauth.SafeResponseHeaders(errExec).Get("Retry-After"); got != "7" {
-		t.Fatalf("SafeResponseHeaders(errExec) Retry-After = %q, want 7", got)
-	}
 	updated, okAuth := authMgr.GetByID(authID)
 	if !okAuth || updated == nil {
 		t.Fatalf("GetByID(%q) missing", authID)
@@ -102,6 +99,14 @@ func TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader(t *testing.T) {
 	state := updated.ModelStates[model]
 	if state == nil || !state.NextRetryAfter.After(before.Add(5*time.Second)) {
 		t.Fatalf("model NextRetryAfter = %v, want at least %v (7s cooldown)", state, before.Add(7*time.Second))
+	}
+	// The terminal 429 reports the pool recovery deadline, including the core
+	// minimum cooldown floor, rather than the plugin's original seven-second hint.
+	header := coreauth.SafeResponseHeaders(errExec).Get("Retry-After")
+	seconds, errSeconds := strconv.Atoi(header)
+	remaining := time.Until(state.NextRetryAfter)
+	if errSeconds != nil || time.Duration(seconds)*time.Second < remaining || time.Duration(seconds)*time.Second > remaining+time.Second {
+		t.Fatalf("terminal Retry-After = %q, want rounded-up pool recovery in %s", header, remaining)
 	}
 }
 

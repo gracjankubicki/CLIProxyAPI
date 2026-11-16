@@ -1,21 +1,14 @@
 package management
 
-// Ten plik istnieje, bo plugin codex-token-usage trzyma blokady kont Codex we
-// wlasnej bazie SQLite i nie implementuje interfejsu QuotaProvider, przez ktory
-// rdzen moglby poprosic go o ich zdjecie. Panel wystawia przycisk
-// "Clear local block", ktory bez tego endpointu konczyl sie pozornym sukcesem:
-// czyscil cooldown rdzenia, podczas gdy realna blokada zyla dalej w pluginie.
-//
-// Zaleznosc jest swiadomie jednostronna i krucha. Rdzen zna tu nazwe tabeli i
-// kolumn nalezacych do pluginu w wersji 0.1.43 i moze przestac je rozpoznawac
-// po jego aktualizacji. Dlatego kazda sciezka bledu nazywa przyczyne wprost:
-// po zmianie schematu awaria ma byc natychmiast widoczna, a nie objawiac sie
-// cichym brakiem efektu, od ktorego zaczela sie cala ta historia.
+// The codex-token-usage plugin stores account blocks in its own SQLite database
+// and has no QuotaProvider interface for clearing them. Without this endpoint,
+// the panel could clear the core cooldown while leaving the actual plugin block
+// in place. This integration depends on the plugin 0.1.43 schema; schema changes
+// must fail explicitly rather than report success without removing the block.
 
 import (
 	"context"
 	"fmt"
-	"github.com/MoeForge/moego/regexp"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/regexp"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
@@ -35,19 +29,15 @@ const (
 	codexAutobanTimeout     = 15 * time.Second
 )
 
-// codexAutobanIndexPattern ogranicza wartosc trafiajaca do zapytania do
-// znakow uzywanych przez identyfikatory poswiadczen. Sam indeks pochodzi juz z
-// rejestru rdzenia, ale zapytanie jest skladane tekstowo, wiec wzorzec pelni
-// role drugiej bariery obok podwojenia apostrofow.
+// codexAutobanIndexPattern restricts query input to credential identifier
+// characters. Registry lookup and SQL literal escaping provide separate guards.
 var codexAutobanIndexPattern = regexp.MustCompile(`^[A-Za-z0-9_:.-]{1,128}$`)
 
-// codexAutobanRequiredColumns to kolumny, bez ktorych nie da sie bezpiecznie
-// oznaczyc blokady jako zdjetej.
+// codexAutobanRequiredColumns are needed to safely mark a block as released.
 var codexAutobanRequiredColumns = []string{"auth_index", "active", "released_at", "release_reason"}
 
-// ClearCodexAutoban dezaktywuje lokalna blokade konta Codex i przy okazji
-// czysci cooldown rdzenia, zeby jedno klikniecie w panelu odblokowalo konto w
-// obu miejscach naraz.
+// ClearCodexAutoban releases a local Codex account block and clears the core
+// cooldown so the panel action updates both stores.
 func (h *Handler) ClearCodexAutoban(c *gin.Context) {
 	if h == nil || h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -75,7 +65,7 @@ func (h *Handler) ClearCodexAutoban(c *gin.Context) {
 	}
 	auth.EnsureIndex()
 
-	// Od tego miejsca uzywamy indeksu z rejestru, a nie surowego wejscia.
+	// Use the registry index from this point onward.
 	resolvedIndex := strings.TrimSpace(auth.Index)
 	if !codexAutobanIndexPattern.MatchString(resolvedIndex) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index has an unsupported format"})
@@ -97,8 +87,7 @@ func (h *Handler) ClearCodexAutoban(c *gin.Context) {
 		return
 	}
 
-	// Cooldown rdzenia czyscimy dopiero po udanym zapisie do pluginu, zeby nie
-	// rozjechac obu stanow, gdy plugin odmowi.
+	// Clear the core cooldown only after the plugin database update succeeds.
 	updated, models, errReset := h.authManager.ResetQuota(c.Request.Context(), auth.ID)
 	if errReset != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -120,8 +109,7 @@ func (h *Handler) ClearCodexAutoban(c *gin.Context) {
 	})
 }
 
-// codexAutobanDatabasePath wskazuje prywatna baze pluginu wewnatrz katalogu
-// poswiadczen.
+// codexAutobanDatabasePath locates the private plugin database under auth-dir.
 func codexAutobanDatabasePath(authDir string) (string, error) {
 	resolvedAuthDir, errResolve := util.ResolveAuthDir(authDir)
 	if errResolve != nil {
@@ -138,9 +126,8 @@ func codexAutobanDatabasePath(authDir string) (string, error) {
 	return databasePath, nil
 }
 
-// clearCodexAutobanEntry oznacza aktywna blokade jako zdjeta i zwraca liczbe
-// zmienionych wpisow. Schemat jest sprawdzany przed zapisem, zeby zmiana po
-// stronie pluginu konczyla sie jawnym bledem zamiast modyfikacji czegos innego.
+// clearCodexAutobanEntry releases an active block and returns the changed row
+// count. Validate the schema before writing to detect incompatible plugin updates.
 func clearCodexAutobanEntry(ctx context.Context, databasePath, authIndex string) (int, error) {
 	if errSchema := assertCodexAutobanSchema(ctx, databasePath); errSchema != nil {
 		return 0, errSchema
@@ -170,8 +157,7 @@ func clearCodexAutobanEntry(ctx context.Context, databasePath, authIndex string)
 	return cleared, nil
 }
 
-// assertCodexAutobanSchema potwierdza, ze tabela i kolumny nadal wygladaja tak,
-// jak zaklada ten endpoint.
+// assertCodexAutobanSchema validates the table and columns this endpoint needs.
 func assertCodexAutobanSchema(ctx context.Context, databasePath string) error {
 	tableOutput, errTable := runSQLite(ctx, databasePath,
 		fmt.Sprintf("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = %s;",
@@ -204,9 +190,8 @@ func assertCodexAutobanSchema(ctx context.Context, databasePath string) error {
 	return nil
 }
 
-// runSQLite wykonuje pojedyncze zapytanie przy uzyciu klienta sqlite3 z obrazu.
-// Rdzen nie ma sterownika SQLite, a dokladanie go rozszerzyloby lokalny patch o
-// zaleznosci w go.mod, ktore kolidowalyby przy kazdym upgradzie upstreamu.
+// runSQLite executes one query with the image's sqlite3 CLI, avoiding an extra
+// Go driver dependency in the local patch set.
 func runSQLite(ctx context.Context, databasePath, statement string) (string, error) {
 	command := exec.CommandContext(ctx, "sqlite3", "-batch", "-noheader", databasePath, statement)
 	output, errRun := command.CombinedOutput()
@@ -223,7 +208,7 @@ func runSQLite(ctx context.Context, databasePath, statement string) (string, err
 	return string(output), nil
 }
 
-// quoteSQLiteLiteral zamyka wartosc w literale tekstowym, podwajajac apostrofy.
+// quoteSQLiteLiteral escapes a SQL text literal by doubling single quotes.
 func quoteSQLiteLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }

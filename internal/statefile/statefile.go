@@ -7,13 +7,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/MoeForge/moego/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	log "github.com/sirupsen/logrus"
 )
 

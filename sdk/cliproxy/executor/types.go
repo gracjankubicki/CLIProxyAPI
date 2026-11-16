@@ -2,11 +2,11 @@ package executor
 
 import (
 	"context"
-	"github.com/MoeForge/moego/json"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/MoeForge/moego/json"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 

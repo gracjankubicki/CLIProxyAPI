@@ -3,7 +3,6 @@ package helps
 import (
 	"bytes"
 	"fmt"
-	"github.com/MoeForge/moego/json"
 	"image"
 	"image/color"
 	"image/draw"
@@ -14,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	log "github.com/sirupsen/logrus"
 )
