@@ -169,6 +169,11 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	if helps.ShouldNormalizeOpenAIToolResultsForModel(compat, baseModel, requestedModel) {
 		helps.NormalizeOpenAIToolResultsTextOnlyDoc(doc)
 	}
+	if shouldNormalizeOpenRouterKimiToolLinks(e, auth, req, baseModel, requestedModel, translated) {
+		if errNormalize := normalizeOpenRouterKimiToolMessageLinksDoc(doc); errNormalize != nil {
+			return resp, errNormalize
+		}
+	}
 	if opts.Alt != "responses/compact" {
 		useMCT := helps.ShouldUseMaxCompletionTokensForModel(compat, baseModel, requestedModel)
 		helps.NormalizeOpenAIMaxTokensDoc(doc, useMCT)
@@ -250,7 +255,10 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	// Translate response back to source format when needed
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, body, &param)
-	if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
+	if apErr := helps.ApplyPatchTranslationError(param); apErr != nil || len(out) == 0 {
+		if apErr != nil {
+			helps.LogUpstreamToolInputRejected(e.provider, req.Model, "non-stream")
+		}
 		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
 	}
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
@@ -412,6 +420,11 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	requestPath := helps.PayloadRequestPath(opts)
 	if helps.ShouldNormalizeOpenAIToolResultsForModel(compat, baseModel, requestedModel) {
 		helps.NormalizeOpenAIToolResultsTextOnlyDoc(doc)
+	}
+	if shouldNormalizeOpenRouterKimiToolLinks(e, auth, req, baseModel, requestedModel, translated) {
+		if errNormalize := normalizeOpenRouterKimiToolMessageLinksDoc(doc); errNormalize != nil {
+			return nil, errNormalize
+		}
 	}
 	if opts.Alt != "responses/compact" {
 		useMCT := helps.ShouldUseMaxCompletionTokensForModel(compat, baseModel, requestedModel)
@@ -581,6 +594,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 				}
 			}
 			if helps.ApplyPatchTranslationError(param) != nil {
+				helps.LogUpstreamToolInputRejected(e.provider, req.Model, "stream")
 				publishStreamError(statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}, false)
 				return true
 			}
@@ -624,6 +638,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 			_ = processFrame()
 		}
 		if !streamFailed && !streamAborted && helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+			helps.LogUpstreamToolInputRejected(e.provider, req.Model, "stream-ended-early")
 			return
 		}
 		if !streamFailed && !streamAborted && !seenDone && errScan == nil && responseFormat == sdktranslator.FormatOpenAIResponse && ctx.Err() == nil && helps.CanFinalizeResponseStream(param) {
@@ -967,6 +982,185 @@ func openAICompatImageEndpointPath(opts cliproxyexecutor.Options) string {
 		return openAICompatImagesGenerationsPath
 	}
 	return openAICompatDefaultImageEndpoint
+}
+
+type openRouterKimiToolCall struct {
+	id   string
+	name string
+}
+
+type openRouterKimiToolMessagePatch struct {
+	index int
+	name  string
+}
+
+func shouldNormalizeOpenRouterKimiToolLinks(e *OpenAICompatExecutor, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, baseModel, requestedModel string, translated []byte) bool {
+	if e == nil {
+		return false
+	}
+
+	compat := e.resolveCompatConfig(auth, req)
+	identifiers := []string{e.provider}
+	if auth != nil {
+		identifiers = append(identifiers, auth.Provider)
+		if auth.Attributes != nil {
+			identifiers = append(identifiers, auth.Attributes["provider_key"], auth.Attributes["compat_name"])
+		}
+	}
+	if compat != nil {
+		identifiers = append(identifiers, compat.Name)
+	}
+	openRouter := false
+	for _, identifier := range identifiers {
+		if isOpenRouterCompatIdentifier(identifier) {
+			openRouter = true
+			break
+		}
+	}
+	if !openRouter {
+		return false
+	}
+
+	modelCandidates := []string{baseModel, requestedModel, ojson.GetBytes(translated, "model").String()}
+	for _, model := range modelCandidates {
+		if isKimiK3ModelName(model) || (compat != nil && compatModelIsKimiK3(compat.Models, model)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isOpenRouterCompatIdentifier(identifier string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(identifier))
+	switch normalized {
+	case "openrouter", "openai-compatibility:openrouter":
+		return true
+	}
+	return strings.HasPrefix(normalized, "openai-compatible-") && strings.TrimPrefix(normalized, "openai-compatible-") == "openrouter"
+}
+
+func isKimiK3ModelName(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
+	model = strings.TrimSuffix(model, "[1m]")
+	model = strings.TrimPrefix(model, "moonshotai/")
+	switch model {
+	case "k3", "k3-256k", "kimi-k3", "kimi-k3-256k", "or-kimi-k3":
+		return true
+	default:
+		return false
+	}
+}
+
+func compatModelIsKimiK3(models []config.OpenAICompatibilityModel, model string) bool {
+	model = normalizeOpenRouterKimiModelName(model)
+	if model == "" {
+		return false
+	}
+	for i := range models {
+		configured := &models[i]
+		if !strings.EqualFold(model, normalizeOpenRouterKimiModelName(configured.Name)) && !strings.EqualFold(model, normalizeOpenRouterKimiModelName(configured.Alias)) {
+			continue
+		}
+		return isKimiK3ModelName(configured.Name)
+	}
+	return false
+}
+
+func normalizeOpenRouterKimiModelName(model string) string {
+	model = strings.ToLower(strings.TrimSpace(thinking.ParseSuffix(model).ModelName))
+	return strings.TrimSuffix(model, "[1m]")
+}
+
+// normalizeOpenRouterKimiToolMessageLinks is the byte-level entry point used by tests.
+func normalizeOpenRouterKimiToolMessageLinks(body []byte) ([]byte, error) {
+	if len(body) == 0 || !ojson.ValidBytes(body) {
+		return body, nil
+	}
+	doc := ojson.NewDoc(body)
+	if errNormalize := normalizeOpenRouterKimiToolMessageLinksDoc(doc); errNormalize != nil {
+		return body, errNormalize
+	}
+	return doc.Bytes(), nil
+}
+
+func normalizeOpenRouterKimiToolMessageLinksDoc(doc *ojson.Doc) error {
+	if doc == nil || doc.Len() == 0 {
+		return nil
+	}
+	messages := doc.Get("messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return nil
+	}
+
+	pending := make([]openRouterKimiToolCall, 0)
+	patches := make([]openRouterKimiToolMessagePatch, 0)
+	for messageIndex, message := range messages.Array() {
+		switch strings.TrimSpace(message.Get("role").String()) {
+		case "assistant":
+			toolCalls := message.Get("tool_calls")
+			if !toolCalls.Exists() || !toolCalls.IsArray() {
+				continue
+			}
+			for _, toolCall := range toolCalls.Array() {
+				name := strings.TrimSpace(toolCall.Get("function.name").String())
+				if name == "" {
+					name = strings.TrimSpace(toolCall.Get("name").String())
+				}
+				if name == "" {
+					continue
+				}
+				pending = append(pending, openRouterKimiToolCall{
+					id:   strings.Clone(strings.TrimSpace(toolCall.Get("id").String())),
+					name: strings.Clone(name),
+				})
+			}
+		case "tool":
+			if strings.TrimSpace(message.Get("name").String()) != "" {
+				toolCallID := strings.TrimSpace(message.Get("tool_call_id").String())
+				if toolCallID == "" {
+					toolCallID = strings.TrimSpace(message.Get("call_id").String())
+				}
+				removeOpenRouterKimiPendingToolCall(&pending, toolCallID)
+				continue
+			}
+			toolCallID := strings.TrimSpace(message.Get("tool_call_id").String())
+			pendingIndex := findOpenRouterKimiPendingToolCall(pending, toolCallID)
+			if pendingIndex < 0 {
+				continue
+			}
+			patches = append(patches, openRouterKimiToolMessagePatch{index: messageIndex, name: pending[pendingIndex].name})
+			pending = append(pending[:pendingIndex], pending[pendingIndex+1:]...)
+		}
+	}
+
+	for _, patch := range patches {
+		if errSet := doc.Set(fmt.Sprintf("messages.%d.name", patch.index), patch.name); errSet != nil {
+			return fmt.Errorf("openai compat executor: failed to set OpenRouter Kimi tool name: %w", errSet)
+		}
+	}
+	return nil
+}
+
+func findOpenRouterKimiPendingToolCall(pending []openRouterKimiToolCall, toolCallID string) int {
+	for index, call := range pending {
+		if toolCallID == "" || call.id == toolCallID {
+			return index
+		}
+	}
+	return -1
+}
+
+func removeOpenRouterKimiPendingToolCall(pending *[]openRouterKimiToolCall, toolCallID string) {
+	if pending == nil || len(*pending) == 0 {
+		return
+	}
+	if toolCallID == "" {
+		*pending = (*pending)[1:]
+		return
+	}
+	if index := findOpenRouterKimiPendingToolCall(*pending, toolCallID); index >= 0 {
+		*pending = append((*pending)[:index], (*pending)[index+1:]...)
+	}
 }
 
 func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType string, stream bool) ([]byte, string, error) {

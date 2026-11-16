@@ -270,6 +270,76 @@ func TestWithXAIBuiltinsReplacesVideo15LiteWithoutMutatingCatalog(t *testing.T) 
 	}
 }
 
+func TestWithCodexBuiltinsKeepsAstraAvailableWithSharedRoute(t *testing.T) {
+	models := WithCodexBuiltins([]*ModelInfo{{
+		ID:                  "gpt-6-astra",
+		DisplayName:         "Native Astra",
+		ContextLength:       272000,
+		MaxCompletionTokens: 128000,
+		Thinking:            &ThinkingSupport{Levels: []string{"low", "medium", "high", "xhigh", "max"}},
+	}})
+
+	var astra []*ModelInfo
+	for _, model := range models {
+		if model != nil && model.ID == "gpt-6-astra" {
+			astra = append(astra, model)
+		}
+	}
+	if len(astra) != 1 {
+		t.Fatalf("WithCodexBuiltins() Astra count = %d, want 1", len(astra))
+	}
+	got := astra[0]
+	if got.ContextLength != 272000 || got.MaxCompletionTokens != 128000 {
+		t.Fatalf("Astra token limits = context:%d completion:%d", got.ContextLength, got.MaxCompletionTokens)
+	}
+	if got.DisplayName != "Native Astra" {
+		t.Fatalf("Astra display name = %q, want native metadata", got.DisplayName)
+	}
+	if got.RequireModelPrefix {
+		t.Fatal("Astra must not require an account prefix; both accounts serve it")
+	}
+	wantLevels := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	if got.Thinking == nil || len(got.Thinking.Levels) != len(wantLevels) {
+		t.Fatalf("Astra thinking levels = %#v, want %#v", got.Thinking, wantLevels)
+	}
+	for i, want := range wantLevels {
+		if got.Thinking.Levels[i] != want {
+			t.Fatalf("Astra thinking level %d = %q, want %q", i, got.Thinking.Levels[i], want)
+		}
+	}
+}
+
+func TestCodexBuiltinAstraFallbackHasSharedRoute(t *testing.T) {
+	models := WithCodexBuiltins(nil)
+	for _, model := range models {
+		if model != nil && model.ID == codexBuiltinAstraModelID {
+			if model.RequireModelPrefix {
+				t.Fatal("fallback Astra must not require an account prefix")
+			}
+			return
+		}
+	}
+	t.Fatal("fallback Astra missing from WithCodexBuiltins(nil)")
+}
+
+func TestCodexFreeModelsDoNotInjectAstra(t *testing.T) {
+	for _, model := range GetCodexFreeModels() {
+		if model != nil && model.ID == codexBuiltinAstraModelID {
+			t.Fatal("Codex free models unexpectedly include Astra")
+		}
+	}
+}
+
+func TestLookupStaticModelInfoFindsCodexAstraBuiltin(t *testing.T) {
+	model := LookupStaticModelInfo("gpt-6-astra")
+	if model == nil {
+		t.Fatal("LookupStaticModelInfo(gpt-6-astra) = nil")
+	}
+	if model.Thinking == nil || len(model.Thinking.Levels) != 6 {
+		t.Fatalf("LookupStaticModelInfo(gpt-6-astra) thinking = %#v, want six levels", model.Thinking)
+	}
+}
+
 func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing.T) {
 	registryRef := GetGlobalRegistry()
 	registryRef.RegisterClient("test-antigravity-websearch-route", "antigravity", []*ModelInfo{

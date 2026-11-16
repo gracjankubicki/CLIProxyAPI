@@ -386,11 +386,12 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	case "claude":
 		if existing, found := s.ownedExecutor("claude"); found {
 			if previous, ok := existing.(*executor.ClaudeExecutor); ok {
+				// WithConfig retains the replay host while preserving upstream executor wrappers.
 				s.registerExecutor(previous.WithConfig(cfg))
 				return
 			}
 		}
-		s.registerExecutor(executor.NewClaudeExecutor(cfg))
+		s.registerExecutor(executor.NewClaudeExecutor(cfg, s.pluginHost))
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		s.registerExecutor(executor.NewKimiExecutor(cfg))
 	case "xai":

@@ -66,6 +66,15 @@ type claudeToResponsesState struct {
 	ReasoningSignature  string
 	ReasoningIndex      int
 	ReasoningItems      []claudeResponsesReasoningItem
+	// compaction state
+	CompactionActive           bool
+	CompactionItemID           string
+	CompactionIndex            int
+	CompactionContent          string
+	CompactionEncrypted        string
+	CompactionContentPresent   bool
+	CompactionEncryptedPresent bool
+	CompactionItems            []claudeResponsesCompactionItem
 	// server-side web search state: a Claude server_tool_use block and its
 	// web_search_tool_result block fold into one Responses web_search_call item.
 	WebSearchByBlock  map[int]*claudeResponsesWebSearchItem
@@ -105,6 +114,16 @@ type claudeResponsesReasoningItem struct {
 	Text        string
 	Signature   string
 	Status      string
+}
+
+type claudeResponsesCompactionItem struct {
+	ID               string
+	OutputIndex      int
+	Content          string
+	Encrypted        string
+	ContentPresent   bool
+	EncryptedPresent bool
+	Status           string
 }
 
 type claudeResponsesUsageTokens struct {
@@ -509,6 +528,38 @@ func (st *claudeToResponsesState) finalizeWebSearchWithStatus(item *claudeRespon
 	_ = doneDoc.Set("output_index", item.OutputIndex)
 	_ = doneDoc.SetRawBytes("item", item.render())
 	return [][]byte{emitEvent("response.output_item.done", doneDoc.Bytes())}
+}
+
+func (st *claudeToResponsesState) finalizeCompactionItem(status string, nextSeq func() int) [][]byte {
+	if !st.CompactionActive {
+		return nil
+	}
+	doneDoc := ojson.NewDocString(`{"type":"response.output_item.done","sequence_number":0,"output_index":0,"item":{"id":"","type":"compaction","status":"completed","content":null,"encrypted_content":null}}`)
+	_ = doneDoc.Set("sequence_number", nextSeq())
+	_ = doneDoc.Set("output_index", st.CompactionIndex)
+	_ = doneDoc.Set("item.id", st.CompactionItemID)
+	_ = doneDoc.Set("item.status", status)
+	if st.CompactionContentPresent {
+		_ = doneDoc.Set("item.content", st.CompactionContent)
+	}
+	if st.CompactionEncryptedPresent {
+		_ = doneDoc.Set("item.encrypted_content", st.CompactionEncrypted)
+	}
+	itemDone := doneDoc.Bytes()
+	st.CompactionItems = append(st.CompactionItems, claudeResponsesCompactionItem{
+		ID: st.CompactionItemID, OutputIndex: st.CompactionIndex,
+		Content: st.CompactionContent, Encrypted: st.CompactionEncrypted,
+		ContentPresent: st.CompactionContentPresent, EncryptedPresent: st.CompactionEncryptedPresent,
+		Status: status,
+	})
+	st.CompactionActive = false
+	st.CompactionItemID = ""
+	st.CompactionIndex = -1
+	st.CompactionContent = ""
+	st.CompactionEncrypted = ""
+	st.CompactionContentPresent = false
+	st.CompactionEncryptedPresent = false
+	return [][]byte{emitEvent("response.output_item.done", itemDone)}
 }
 
 // isApplyPatch consults the original request's winning declaration, not the
@@ -952,6 +1003,14 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			st.FuncInputSnapshot = make(map[int]string)
 			st.FuncInputSnapshotErrors = make(map[int]error)
 			st.FuncIdentityConflicts = make(map[int]bool)
+			st.CompactionActive = false
+			st.CompactionItemID = ""
+			st.CompactionIndex = -1
+			st.CompactionContent = ""
+			st.CompactionEncrypted = ""
+			st.CompactionContentPresent = false
+			st.CompactionEncryptedPresent = false
+			st.CompactionItems = nil
 			st.FuncArgsBuf = make(map[int]*strings.Builder)
 			st.FuncArgsDone = make(map[int]bool)
 			st.FuncItemDone = make(map[int]bool)
@@ -1006,6 +1065,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		}
 		idx := int(root.Get("index").Int())
 		typ := cb.Get("type").String()
+		out = append(out, st.finalizeCompactionItem("completed", nextSeq)...)
 
 		// Keep adjacent text blocks in the same assistant message.
 		if typ != "text" {
@@ -1195,6 +1255,32 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			_ = partDoc.Set("item_id", st.ReasoningItemID)
 			_ = partDoc.Set("output_index", st.ReasoningIndex)
 			out = append(out, emitEvent("response.reasoning_summary_part.added", partDoc.Bytes()))
+		} else if typ == "compaction" {
+			out = append(out, st.finalizeAssistantMessage(nextSeq)...)
+			st.CompactionActive = true
+			st.CompactionIndex = st.allocateOutputIndex()
+			st.CompactionItemID = fmt.Sprintf("cmp_%s_%d", st.ResponseID, idx)
+			st.CompactionContent = ""
+			st.CompactionEncrypted = ""
+			st.CompactionContentPresent = cb.Get("content").Exists()
+			st.CompactionEncryptedPresent = cb.Get("encrypted_content").Exists()
+			if st.CompactionContentPresent && cb.Get("content").Type == ojson.String {
+				st.CompactionContent = strings.Clone(cb.Get("content").String())
+			}
+			if st.CompactionEncryptedPresent && cb.Get("encrypted_content").Type == ojson.String {
+				st.CompactionEncrypted = strings.Clone(cb.Get("encrypted_content").String())
+			}
+			itemDoc := ojson.NewDocString(`{"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"","type":"compaction","status":"in_progress","content":null,"encrypted_content":null}}`)
+			_ = itemDoc.Set("sequence_number", nextSeq())
+			_ = itemDoc.Set("output_index", st.CompactionIndex)
+			_ = itemDoc.Set("item.id", st.CompactionItemID)
+			if st.CompactionContentPresent {
+				_ = itemDoc.Set("item.content", st.CompactionContent)
+			}
+			if st.CompactionEncryptedPresent {
+				_ = itemDoc.Set("item.encrypted_content", st.CompactionEncrypted)
+			}
+			out = append(out, emitEvent("response.output_item.added", itemDoc.Bytes()))
 		}
 	case "content_block_delta":
 		d := root.Get("delta")
@@ -1248,6 +1334,19 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 				}
 			}
 			return [][]byte{}
+		} else if dt == "compaction_delta" {
+			if st.CompactionActive {
+				if content := d.Get("content"); content.Exists() {
+					st.CompactionContentPresent = true
+					// Own the text: the delta may be a view into a reused input buffer.
+					st.CompactionContent += strings.Clone(content.String())
+				}
+				if encrypted := d.Get("encrypted_content"); encrypted.Exists() {
+					st.CompactionEncryptedPresent = true
+					st.CompactionEncrypted += strings.Clone(encrypted.String())
+				}
+			}
+			return [][]byte{}
 		} else if dt == "citations_delta" {
 			if citation := d.Get("citation"); citation.Exists() {
 				st.appendMessageAnnotation(ojson.Parse(strings.Clone(citation.Raw)).Value())
@@ -1290,6 +1389,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 		return [][]byte{}
 	case "message_stop":
 		toolStatus := claudeResponsesOutputStatus(st.StopReason)
+		out = append(out, st.finalizeCompactionItem(toolStatus, nextSeq)...)
 		if st.ReasoningActive || st.ReasoningItemID != "" {
 			out = append(out, st.finalizeReasoningItem(toolStatus, nextSeq)...)
 		}
@@ -1348,6 +1448,19 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			summary, _ = ojson.SetBytes(summary, "text", reasoning.Text)
 			translatorcommon.SetRawArrayItemsDoc(itemDoc, "summary", [][]byte{summary})
 			_ = outputsWrapperDoc.SetRawBytes(fmt.Sprintf("arr.%d", reasoning.OutputIndex), itemDoc.Bytes())
+			hasOutputs = true
+		}
+		for _, compaction := range st.CompactionItems {
+			itemDoc := ojson.NewDocString(`{"id":"","type":"compaction","status":"completed","content":null,"encrypted_content":null}`)
+			_ = itemDoc.Set("id", compaction.ID)
+			_ = itemDoc.Set("status", compaction.Status)
+			if compaction.ContentPresent {
+				_ = itemDoc.Set("content", compaction.Content)
+			}
+			if compaction.EncryptedPresent {
+				_ = itemDoc.Set("encrypted_content", compaction.Encrypted)
+			}
+			_ = outputsWrapperDoc.SetRawBytes(fmt.Sprintf("arr.%d", compaction.OutputIndex), itemDoc.Bytes())
 			hasOutputs = true
 		}
 		// assistant message items
@@ -1509,17 +1622,21 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, modelN
 	)
 
 	type nonStreamOutputItem struct {
-		outputIndex   int
-		itemType      string
-		id            string
-		callID        string
-		name          string
-		text          strings.Builder
-		signature     string
-		annotations   []any
-		args          strings.Builder
-		inputSnapshot string
-		results       []byte
+		outputIndex      int
+		itemType         string
+		id               string
+		callID           string
+		name             string
+		text             strings.Builder
+		signature        string
+		content          string
+		encrypted        string
+		contentPresent   bool
+		encryptedPresent bool
+		annotations      []any
+		args             strings.Builder
+		inputSnapshot    string
+		results          []byte
 	}
 
 	blockToItem := make(map[int]*nonStreamOutputItem)
@@ -1693,6 +1810,18 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, modelN
 				item := newOutputItem("reasoning", idx)
 				item.id = fmt.Sprintf("rs_%s_%d", responseID, idx)
 				item.signature = claudeReasoningCarrier(cb)
+			case "compaction":
+				activeMessageItem = nil
+				item := newOutputItem("compaction", idx)
+				item.id = fmt.Sprintf("cmp_%s_%d", responseID, idx)
+				item.contentPresent = cb.Get("content").Exists()
+				item.encryptedPresent = cb.Get("encrypted_content").Exists()
+				if item.contentPresent && cb.Get("content").Type == ojson.String {
+					item.content = cb.Get("content").String()
+				}
+				if item.encryptedPresent && cb.Get("encrypted_content").Type == ojson.String {
+					item.encrypted = cb.Get("encrypted_content").String()
+				}
 			}
 
 		case "content_block_delta":
@@ -1726,6 +1855,17 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, modelN
 				if item != nil && item.itemType == "reasoning" {
 					if signature := d.Get("signature"); signature.Exists() && signature.String() != "" {
 						item.signature = signature.String()
+					}
+				}
+			case "compaction_delta":
+				if item != nil && item.itemType == "compaction" {
+					if content := d.Get("content"); content.Exists() {
+						item.contentPresent = true
+						item.content += content.String()
+					}
+					if encrypted := d.Get("encrypted_content"); encrypted.Exists() {
+						item.encryptedPresent = true
+						item.encrypted += encrypted.String()
 					}
 				}
 			case "citations_delta":
@@ -1805,6 +1945,17 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, modelN
 			summary := []byte(`{"type":"summary_text","text":""}`)
 			summary, _ = ojson.SetBytes(summary, "text", outputItem.text.String())
 			_ = itemDoc.SetRawBytes("summary", translatorcommon.JoinRawArray([][]byte{summary}))
+			item = itemDoc.Bytes()
+		case "compaction":
+			itemDoc := ojson.NewDocString(`{"id":"","type":"compaction","status":"completed","content":null,"encrypted_content":null}`)
+			_ = itemDoc.Set("id", outputItem.id)
+			_ = itemDoc.Set("status", itemStatus)
+			if outputItem.contentPresent {
+				_ = itemDoc.Set("content", outputItem.content)
+			}
+			if outputItem.encryptedPresent {
+				_ = itemDoc.Set("encrypted_content", outputItem.encrypted)
+			}
 			item = itemDoc.Bytes()
 		case "web_search_call":
 			item = buildResponsesWebSearchCallItemWithStatus(outputItem.callID, claudeWebSearchQuery(outputItem.args.String()), claudeResponsesWebSearchStatus(stopReason, itemStatus, len(outputItem.results) > 0), outputItem.results)

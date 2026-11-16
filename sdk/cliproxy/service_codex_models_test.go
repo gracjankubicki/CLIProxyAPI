@@ -120,7 +120,7 @@ func TestRegisterModelsForAuthCodexAPIKeyModels(t *testing.T) {
 		{
 			name:        "defaults without explicit models",
 			entry:       config.CodexKey{APIKey: "default-key"},
-			wantIDs:     codexModelIDSet(defaultModels),
+			wantIDs:     codexModelIDSet(applyModelPrefixes(defaultModels, "", false)),
 			wantPresent: []string{"gpt-image-1.5", "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst", "gpt-image-2.6"},
 		},
 		{
@@ -140,7 +140,7 @@ func TestRegisterModelsForAuthCodexAPIKeyModels(t *testing.T) {
 				APIKey:         "excluded-key",
 				ExcludedModels: []string{excludedModelID},
 			},
-			wantIDs: codexModelIDSet(defaultModels[1:]),
+			wantIDs: codexModelIDSet(applyModelPrefixes(defaultModels[1:], "", false)),
 		},
 	}
 
@@ -189,7 +189,7 @@ func TestRegisterModelsForAuthCodexAPIKeyModels(t *testing.T) {
 }
 
 func TestRegisterModelsForAuthCodexAPIKeyDefaultRequiresConfigMatch(t *testing.T) {
-	defaultIDs := codexModelIDSet(internalregistry.GetCodexProModels())
+	defaultIDs := codexModelIDSet(applyModelPrefixes(internalregistry.GetCodexProModels(), "", false))
 	tests := []struct {
 		name       string
 		config     config.Config
@@ -284,7 +284,7 @@ func TestRegisterModelsForAuthCodexAPIKeyDefaultRequiresConfigMatch(t *testing.T
 }
 
 func TestRegisterConfigAPIKeyAuthsCodexModelModes(t *testing.T) {
-	defaultIDs := codexModelIDSet(internalregistry.GetCodexProModels())
+	defaultIDs := codexModelIDSet(applyModelPrefixes(internalregistry.GetCodexProModels(), "", false))
 	tests := []struct {
 		name       string
 		models     []internalconfig.CodexModel
@@ -347,6 +347,58 @@ func TestRegisterConfigAPIKeyAuthsCodexModelModes(t *testing.T) {
 						t.Errorf("/v1/models source is missing %q", modelID)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestRegisterModelsForAuthKeepsAstraPrefixedAndSharedOnBothOAuthAccounts(t *testing.T) {
+	service := &Service{cfg: &config.Config{}}
+	modelRegistry := internalregistry.GetGlobalRegistry()
+	firstAuth := &coreauth.Auth{
+		ID:       "codex-astra-account-1",
+		Provider: "codex",
+		Prefix:   "account-1",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+			"plan_type": "pro",
+		},
+	}
+	secondAuth := &coreauth.Auth{
+		ID:       "codex-astra-account-2",
+		Provider: "codex",
+		Prefix:   "account-2",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+			"plan_type": "team",
+		},
+	}
+	for _, auth := range []*coreauth.Auth{firstAuth, secondAuth} {
+		modelRegistry.UnregisterClient(auth.ID)
+		service.registerModelsForAuth(context.Background(), auth)
+	}
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(firstAuth.ID)
+		modelRegistry.UnregisterClient(secondAuth.ID)
+	})
+
+	for _, testCase := range []struct {
+		name   string
+		authID string
+		want   string
+	}{
+		{name: "first", authID: firstAuth.ID, want: "account-1/gpt-6-astra"},
+		{name: "second", authID: secondAuth.ID, want: "account-2/gpt-6-astra"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			models := codexModelIDSet(modelRegistry.GetModelsForClient(testCase.authID))
+			if _, ok := models[testCase.want]; !ok {
+				t.Fatalf("account models are missing prefixed Astra %q: %#v", testCase.want, models)
+			}
+			if _, ok := models["gpt-6-astra"]; !ok {
+				t.Fatalf("account models are missing shared Astra: %#v", models)
 			}
 		})
 	}

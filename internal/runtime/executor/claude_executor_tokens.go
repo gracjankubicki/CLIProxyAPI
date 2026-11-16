@@ -60,6 +60,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	if len(opts.OriginalRequest) > 0 {
 		originalTranslatedForPayload = helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, stream, helps.APIKeyModelIsCompat(req))
 	}
+	body = helps.LimitClaudeRequestImages(body)
 	doc := ojson.NewDoc(body)
 	helps.SetStringIfDifferentDoc(doc, "model", upstreamModel)
 	helps.NormalizeClaudeToolChoiceDoc(e.upstreamRequestLogProvider(), upstreamModel, doc)
@@ -80,6 +81,10 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	body = doc.Bytes()
 	if errValidate := validateClaudeTokenCountRequest(body); errValidate != nil {
 		return cliproxyexecutor.Response{}, errValidate
+	}
+	// Same local answer as Execute for a request Anthropic would reject.
+	if errImages := helps.ValidateClaudeImageLimits(body); errImages != nil {
+		return cliproxyexecutor.Response{}, errImages
 	}
 
 	// Custom API-key gateways without a native count_tokens contract continue to
@@ -186,6 +191,7 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	if len(opts.OriginalRequest) > 0 {
 		originalTranslatedForPayload = helps.TranslateRequestWithAPIKeyModelCompatibility(ctx, opts.Headers, e.cfg, from, to, baseModel, opts.OriginalRequest, stream, helps.APIKeyModelIsCompat(req))
 	}
+	body = helps.LimitClaudeRequestImages(body)
 	doc := ojson.NewDoc(body)
 	helps.SetStringIfDifferentDoc(doc, "model", upstreamModel)
 	helps.NormalizeClaudeToolChoiceDoc(e.upstreamRequestLogProvider(), upstreamModel, doc)
@@ -271,6 +277,9 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 	body = doc.Bytes()
 	if errMidSystem := validateClaudeMidSystemMessageModel(body, confirmedClaudeCode, directAnthropic); errMidSystem != nil {
 		return cliproxyexecutor.Response{}, errMidSystem
+	}
+	if errImages := helps.ValidateClaudeImageLimits(body); errImages != nil {
+		return cliproxyexecutor.Response{}, errImages
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {

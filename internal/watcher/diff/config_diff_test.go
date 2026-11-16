@@ -74,6 +74,25 @@ func TestBuildConfigChangeDetailsClientCodexWebSearchResultCache(t *testing.T) {
 	}
 }
 
+func TestBuildConfigChangeDetailsLocalStateFiles(t *testing.T) {
+	oldCfg, newCfg := &config.Config{}, &config.Config{}
+	newCfg.Client.Codex.WebSearchResultCache.StateFile = "a.state"
+	newCfg.Routing.SessionAffinityStateFile = "b.state"
+	changes := BuildConfigChangeDetails(oldCfg, newCfg)
+	want := map[string]bool{
+		"client.codex.web-search-result-cache.state-file:  -> a.state (applies after restart)": true,
+		"routing.session-affinity-state-file:  -> b.state (applies after restart)":             true,
+	}
+	if len(changes) != len(want) {
+		t.Fatalf("changes = %v", changes)
+	}
+	for _, change := range changes {
+		if !want[change] {
+			t.Fatalf("unexpected change %q", change)
+		}
+	}
+}
+
 func TestBuildConfigChangeDetails(t *testing.T) {
 	oldCfg := &config.Config{
 		Port:    8080,

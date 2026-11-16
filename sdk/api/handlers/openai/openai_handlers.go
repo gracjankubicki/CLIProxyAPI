@@ -346,6 +346,13 @@ func convertChatCompletionsResponseToCompletions(rawJSON []byte) []byte {
 func convertChatCompletionsStreamChunkToCompletions(chunkData []byte) []byte {
 	root := util.ParseGJSONBytesNoCopy(chunkData)
 
+	// A translated terminal error (for example Claude's
+	// model_context_window_exceeded mapped to context_length_exceeded) has no
+	// choices; pass it through so the client receives it as the stream's end.
+	if !root.Get("choices").Exists() && root.Get("error").IsObject() {
+		return bytes.Clone(chunkData)
+	}
+
 	// Check if this chunk has any meaningful content
 	hasContent := false
 	hasUsage := root.Get("usage").Exists()
@@ -754,6 +761,11 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 				initialHasFinishReason = chunkHasFinishReason(converted)
 				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(converted))
 				flusher.Flush()
+				// Same as Chat Completions: a terminal error chunk ends the stream.
+				if termErr := chunkTerminalError(converted); termErr != nil {
+					cliCancel(termErr.Error)
+					return
+				}
 			}
 
 			done := make(chan struct{})
@@ -761,14 +773,25 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			stop := func() { doneOnce.Do(func() { close(done) }) }
 
 			convertedChan := make(chan []byte)
+			// Errors pass through the same relay after the last chunk, so a terminal
+			// error chunk still in flight is written before a trailing transport error.
+			relayedErrs := make(chan *interfaces.ErrorMessage, 1)
 			go func() {
 				defer close(convertedChan)
 				for {
 					select {
 					case <-done:
+						close(relayedErrs)
 						return
 					case chunk, ok := <-dataChan:
 						if !ok {
+							for errMsg := range errChan {
+								select {
+								case relayedErrs <- errMsg:
+								default:
+								}
+							}
+							close(relayedErrs)
 							return
 						}
 						converted := convertChatCompletionsStreamChunkToCompletions(chunk)
@@ -777,6 +800,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 						}
 						select {
 						case <-done:
+							close(relayedErrs)
 							return
 						case convertedChan <- converted:
 						}
@@ -787,7 +811,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			h.handleStreamResult(c, flusher, func(err error) {
 				stop()
 				cliCancel(err)
-			}, convertedChan, errChan, initialHasFinishReason)
+			}, convertedChan, relayedErrs, initialHasFinishReason)
 			return
 		case <-keepAliveC:
 			writeKeepAlive()

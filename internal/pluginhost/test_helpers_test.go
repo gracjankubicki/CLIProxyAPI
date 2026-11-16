@@ -157,6 +157,43 @@ func (l *testSymbolLookup) Call(ctx context.Context, method string, request []by
 			return nil, errIntercept
 		}
 		return marshalRPCResult(resp)
+	case pluginabi.MethodReasoningReplayPrepare:
+		if l.active.Capabilities.ReasoningReplayPlugin == nil {
+			return nil, fmt.Errorf("missing reasoning replay plugin")
+		}
+		var req pluginapi.ReasoningReplayPrepareRequest
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		resp, errPrepare := l.active.Capabilities.ReasoningReplayPlugin.PrepareReasoningReplay(ctx, req)
+		if errPrepare != nil {
+			return nil, errPrepare
+		}
+		return marshalRPCResult(resp)
+	case pluginabi.MethodReasoningReplayObserve:
+		if l.active.Capabilities.ReasoningReplayPlugin == nil {
+			return nil, fmt.Errorf("missing reasoning replay plugin")
+		}
+		var req pluginapi.ReasoningReplayObservation
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		if errObserve := l.active.Capabilities.ReasoningReplayPlugin.ObserveReasoningReplay(ctx, req); errObserve != nil {
+			return nil, errObserve
+		}
+		return marshalRPCResult(rpcEmptyResponse{})
+	case pluginabi.MethodReasoningReplayComplete:
+		if l.active.Capabilities.ReasoningReplayPlugin == nil {
+			return nil, fmt.Errorf("missing reasoning replay plugin")
+		}
+		var req pluginapi.ReasoningReplayCompletion
+		if errUnmarshal := json.Unmarshal(request, &req); errUnmarshal != nil {
+			return nil, errUnmarshal
+		}
+		if errComplete := l.active.Capabilities.ReasoningReplayPlugin.CompleteReasoningReplay(ctx, req); errComplete != nil {
+			return nil, errComplete
+		}
+		return marshalRPCResult(rpcEmptyResponse{})
 	case pluginabi.MethodAuthIdentifier:
 		if l.active.Capabilities.AuthProvider == nil && len(l.active.Capabilities.AuthProviders) == 0 {
 			return nil, fmt.Errorf("missing auth provider")

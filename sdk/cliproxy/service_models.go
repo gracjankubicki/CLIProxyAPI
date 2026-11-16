@@ -704,8 +704,17 @@ func cloneModelInfoForCatalogRoute(model *ModelInfo) ModelInfo {
 
 func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {
 	trimmedPrefix := strings.TrimSpace(prefix)
-	if trimmedPrefix == "" || len(models) == 0 {
+	if len(models) == 0 {
 		return models
+	}
+	if trimmedPrefix == "" {
+		filtered := make([]*ModelInfo, 0, len(models))
+		for _, model := range models {
+			if model != nil && !model.RequireModelPrefix {
+				filtered = append(filtered, model)
+			}
+		}
+		return filtered
 	}
 
 	out := make([]*ModelInfo, 0, len(models)*2)
@@ -734,7 +743,7 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		if baseID == "" {
 			continue
 		}
-		if !forceModelPrefix || trimmedPrefix == baseID {
+		if (!forceModelPrefix && !model.RequireModelPrefix) || trimmedPrefix == baseID {
 			addModel(model)
 		}
 		clone := cloneModelInfoForCatalogRoute(model)

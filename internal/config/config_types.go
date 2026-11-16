@@ -601,6 +601,12 @@ type RoutingConfig struct {
 	//     keep the binding and return the error (or retry the same credential) instead.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
+
+	// SessionAffinityStateFile persists session-to-auth bindings to a local file so they
+	// survive a graceful restart. Relative paths resolve against auth-dir. Empty keeps
+	// bindings in memory only. Read once at startup; ignored when Home is enabled or
+	// when session affinity is disabled at startup.
+	SessionAffinityStateFile string `yaml:"session-affinity-state-file,omitempty" json:"session-affinity-state-file,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

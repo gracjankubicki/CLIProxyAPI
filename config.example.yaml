@@ -227,6 +227,11 @@ routing:
   #     keep the binding and return the error (or retry the same credential) instead.
   # Ignored when routing.session-affinity is false.
   session-affinity-rebind-on: "any"
+  # Local state file that keeps session-to-auth bindings across a graceful restart.
+  # Relative paths resolve against auth-dir; use a non-.json extension so the file is
+  # never read as a credential. Empty (default) keeps bindings in memory only.
+  # Read once at startup; ignored when Home is enabled.
+  # session-affinity-state-file: ".cliproxy-state/session-affinity.state"
 
   # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
   force-model-prefix: false
@@ -405,6 +410,9 @@ client:
       enabled: false
       ttl: "24h"
       limit: 1024
+      # Optional local state file that keeps cached results across a graceful restart.
+      # Relative paths resolve against auth-dir. Read once at startup; ignored when Home is enabled.
+      # state-file: ".cliproxy-state/claude-web-search-results.state"
 
   claude:
     # Show public Codex commentary as visible Claude text, retaining phase markers

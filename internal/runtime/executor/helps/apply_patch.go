@@ -8,6 +8,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+	log "github.com/sirupsen/logrus"
 )
 
 // ApplyPatchUpstreamErrorMessage deliberately excludes upstream JSON and patch text.
@@ -103,6 +104,15 @@ func ApplyPatchTranslationError(param any) error {
 		return nil
 	}
 	return state.ToolInputError()
+}
+
+// LogUpstreamToolInputRejected records one warn line when an upstream model
+// returned custom-tool arguments (freeform apply_patch or the shell tool) that
+// the proxy could not parse into a valid tool call. It logs only provider, model
+// and phase, never the patch text, command or upstream JSON, so repeated format
+// breakage by a specific model stays visible without leaking content.
+func LogUpstreamToolInputRejected(provider, model, phase string) {
+	log.Warnf("upstream tool arguments rejected | provider=%s model=%s phase=%s", provider, model, phase)
 }
 
 // FinalizeApplyPatchStream notifies request-local state of a transport ending.

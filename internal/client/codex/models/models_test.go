@@ -143,6 +143,51 @@ func TestCodexClientHidesSpeechModels(t *testing.T) {
 	}
 }
 
+func TestBuildResponseForClientUsesNativeAstraTemplateForAccountRoutes(t *testing.T) {
+	available := []map[string]any{
+		{
+			"id":                    "codex-1/gpt-6-astra",
+			"display_name":          "GPT-6 Astra [first]",
+			"context_length":        272000,
+			"max_completion_tokens": 128000,
+		},
+		{
+			"id":                    "codex-2/gpt-6-astra",
+			"display_name":          "GPT-6 Astra [second]",
+			"context_length":        272000,
+			"max_completion_tokens": 128000,
+		},
+	}
+
+	response := BuildResponseForClient(available, nil, false, "0.153.0")
+	models, ok := response["models"].([]map[string]any)
+	if !ok || len(models) != 2 {
+		t.Fatalf("models = %#v, want two account routes", response["models"])
+	}
+	for _, model := range models {
+		slug := stringModelValue(model, "slug")
+		if slug != "codex-1/gpt-6-astra" && slug != "codex-2/gpt-6-astra" {
+			t.Fatalf("unexpected Astra slug %q", slug)
+		}
+		if got := intModelValue(model, "context_window"); got != 272000 {
+			t.Fatalf("%s context_window = %d, want 272000", slug, got)
+		}
+		if got := intModelValue(model, "max_context_window"); got != 872000 {
+			t.Fatalf("%s max_context_window = %d, want 872000", slug, got)
+		}
+		if got := intModelValue(model, "max_tokens"); got != 128000 {
+			t.Fatalf("%s max_tokens = %d, want 128000", slug, got)
+		}
+		levels, okLevels := model["supported_reasoning_levels"].([]any)
+		if !okLevels || len(levels) == 0 {
+			t.Fatalf("%s supported_reasoning_levels = %#v", slug, model["supported_reasoning_levels"])
+		}
+		if effort := stringModelValue(levels[len(levels)-1].(map[string]any), "effort"); effort != "ultra" {
+			t.Fatalf("%s last reasoning effort = %q, want ultra", slug, effort)
+		}
+	}
+}
+
 func TestCodexClientModelsResponse_AppliesDisplayNameToTemplateModel(t *testing.T) {
 	resp := BuildResponse([]map[string]any{{
 		"id":           "gpt-5.5",

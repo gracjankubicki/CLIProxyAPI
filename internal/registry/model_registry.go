@@ -105,6 +105,10 @@ type ModelInfo struct {
 	// UserDefined models have thinking configuration passed through without validation.
 	UserDefined bool `json:"-"`
 
+	// RequireModelPrefix keeps this model account-specific when its credential has
+	// a prefix, even when unprefixed access remains enabled for ordinary models.
+	RequireModelPrefix bool `json:"-"`
+
 	// IsCompat enables compatibility handling for this configured API-key model.
 	// It is internal metadata and is not exposed in model listings.
 	IsCompat bool `json:"-"`

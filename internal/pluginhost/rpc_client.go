@@ -140,6 +140,9 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 		// Missing schema_version is treated as the original contract.
 		schemaVersion = 1
 	}
+	if resp.Capabilities.ReasoningReplayPlugin && schemaVersion < pluginabi.SchemaVersionReasoningReplay {
+		return pluginapi.Plugin{}, fmt.Errorf("plugin reasoning replay requires schema version %d or newer, got %d", pluginabi.SchemaVersionReasoningReplay, schemaVersion)
+	}
 	plugin := pluginapi.Plugin{
 		Metadata:      resp.Metadata,
 		SchemaVersion: schemaVersion,
@@ -232,6 +235,9 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	}
 	if resp.Capabilities.StreamChunkInterceptor {
 		plugin.Capabilities.StreamChunkInterceptor = adapter
+	}
+	if schemaVersion >= pluginabi.SchemaVersionReasoningReplay && resp.Capabilities.ReasoningReplayPlugin {
+		plugin.Capabilities.ReasoningReplayPlugin = adapter
 	}
 	if resp.Capabilities.WebSocketResponseObserver {
 		plugin.Capabilities.WebSocketResponseObserver = adapter
@@ -351,6 +357,12 @@ func sanitizePluginRequest(request any) any {
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case rpcWebSocketResponseEvent:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case pluginapi.ReasoningReplayPrepareRequest:
+		req.Metadata = sanitizePluginMetadata(req.Metadata)
+		return req
+	case rpcReasoningReplayPrepareRequest:
 		req.Metadata = sanitizePluginMetadata(req.Metadata)
 		return req
 	case pluginapi.ExecutorHTTPRequest:
@@ -740,6 +752,35 @@ func (a *rpcPluginAdapter) InterceptStreamChunk(ctx context.Context, req plugina
 		StreamChunkInterceptRequest: req,
 		HostCallbackID:              callbackID,
 	})
+}
+
+func (a *rpcPluginAdapter) PrepareReasoningReplay(ctx context.Context, req pluginapi.ReasoningReplayPrepareRequest) (pluginapi.ReasoningReplayPrepareResponse, error) {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.ReasoningReplayPrepareResponse](ctx, a.client, pluginabi.MethodReasoningReplayPrepare, rpcReasoningReplayPrepareRequest{
+		ReasoningReplayPrepareRequest: req,
+		HostCallbackID:                callbackID,
+	})
+}
+
+func (a *rpcPluginAdapter) ObserveReasoningReplay(ctx context.Context, req pluginapi.ReasoningReplayObservation) error {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	_, errCall := callPlugin[rpcEmptyResponse](ctx, a.client, pluginabi.MethodReasoningReplayObserve, rpcReasoningReplayObservation{
+		ReasoningReplayObservation: req,
+		HostCallbackID:             callbackID,
+	})
+	return errCall
+}
+
+func (a *rpcPluginAdapter) CompleteReasoningReplay(ctx context.Context, req pluginapi.ReasoningReplayCompletion) error {
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	_, errCall := callPlugin[rpcEmptyResponse](ctx, a.client, pluginabi.MethodReasoningReplayComplete, rpcReasoningReplayCompletion{
+		ReasoningReplayCompletion: req,
+		HostCallbackID:            callbackID,
+	})
+	return errCall
 }
 
 func (a *rpcPluginAdapter) ObserveWebSocketResponseEvent(ctx context.Context, event pluginapi.WebSocketResponseEvent) error {

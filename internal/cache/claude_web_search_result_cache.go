@@ -122,6 +122,7 @@ func CacheClaudeWebSearchResultBestEffort(ctx context.Context, sessionKey, toolU
 		}
 		removeClaudeWebSearchResultLocked(oldest)
 	}
+	markClaudeWebSearchResultDirtyLocked()
 	return true
 }
 
@@ -174,6 +175,7 @@ func GetClaudeWebSearchResultRequired(ctx context.Context, sessionKey, toolUseID
 	now := claudeWebSearchResultNow()
 	if !now.Before(entry.expiresAt) {
 		removeClaudeWebSearchResultLocked(element)
+		markClaudeWebSearchResultDirtyLocked()
 		return nil, false, nil
 	}
 	effectiveTTL := entry.ttl
@@ -186,6 +188,7 @@ func GetClaudeWebSearchResultRequired(ctx context.Context, sessionKey, toolUseID
 	}
 	entry.expiresAt = now.Add(effectiveTTL)
 	claudeWebSearchResultOrder.MoveToFront(element)
+	markClaudeWebSearchResultDirtyLocked()
 	return bytes.Clone(entry.content), true, nil
 }
 
@@ -193,8 +196,12 @@ func GetClaudeWebSearchResultRequired(ctx context.Context, sessionKey, toolUseID
 func ClearClaudeWebSearchResultCache() {
 	claudeWebSearchResultMu.Lock()
 	defer claudeWebSearchResultMu.Unlock()
+	hadEntries := claudeWebSearchResultOrder.Len() > 0
 	claudeWebSearchResultIndex = make(map[string]*list.Element)
 	claudeWebSearchResultOrder.Init()
+	if hadEntries {
+		markClaudeWebSearchResultDirtyLocked()
+	}
 }
 
 func purgeExpiredClaudeWebSearchResultCache(now time.Time) {
@@ -204,13 +211,18 @@ func purgeExpiredClaudeWebSearchResultCache(now time.Time) {
 }
 
 func purgeExpiredClaudeWebSearchResultLocked(now time.Time) {
+	removed := false
 	for element := claudeWebSearchResultOrder.Back(); element != nil; {
 		prev := element.Prev()
 		entry := element.Value.(*claudeWebSearchResultEntry)
 		if !now.Before(entry.expiresAt) {
 			removeClaudeWebSearchResultLocked(element)
+			removed = true
 		}
 		element = prev
+	}
+	if removed {
+		markClaudeWebSearchResultDirtyLocked()
 	}
 }
 

@@ -620,6 +620,58 @@ func TestRegisterRPCPluginAcceptsModelRouterOnSchema1(t *testing.T) {
 	}
 }
 
+func TestRegisterRPCPluginRejectsReasoningReplayOnLegacySchema(t *testing.T) {
+	plugin := validTestPlugin("reasoning-replay-legacy-schema")
+	plugin.Capabilities.ReasoningReplayPlugin = reasoningReplayPluginFuncs{
+		prepare: func(context.Context, pluginapi.ReasoningReplayPrepareRequest) (pluginapi.ReasoningReplayPrepareResponse, error) {
+			return pluginapi.ReasoningReplayPrepareResponse{}, nil
+		},
+		observe:  func(context.Context, pluginapi.ReasoningReplayObservation) error { return nil },
+		complete: func(context.Context, pluginapi.ReasoningReplayCompletion) error { return nil },
+	}
+	lookup := newTestSymbolLookup(&testPlugin{registerResult: plugin})
+	lookup.schemaVersion = pluginabi.SchemaVersionWebSocketResponseObserver
+
+	_, errRegister := registerRPCPlugin(context.Background(), nil, "reasoning-replay-legacy-schema", lookup, pluginabi.MethodPluginRegister, nil)
+	if errRegister == nil || !strings.Contains(errRegister.Error(), "reasoning replay") {
+		t.Fatalf("registerRPCPlugin() error = %v, want reasoning replay schema error", errRegister)
+	}
+}
+
+func TestRegisterRPCPluginEnablesReasoningReplayOnCurrentSchema(t *testing.T) {
+	plugin := validTestPlugin("reasoning-replay-current-schema")
+	plugin.Capabilities.ReasoningReplayPlugin = reasoningReplayPluginFuncs{
+		prepare: func(context.Context, pluginapi.ReasoningReplayPrepareRequest) (pluginapi.ReasoningReplayPrepareResponse, error) {
+			return pluginapi.ReasoningReplayPrepareResponse{}, nil
+		},
+		observe:  func(context.Context, pluginapi.ReasoningReplayObservation) error { return nil },
+		complete: func(context.Context, pluginapi.ReasoningReplayCompletion) error { return nil },
+	}
+	lookup := newTestSymbolLookup(&testPlugin{registerResult: plugin})
+	lookup.schemaVersion = pluginabi.SchemaVersionReasoningReplay
+
+	registered, errRegister := registerRPCPlugin(context.Background(), nil, "reasoning-replay-current-schema", lookup, pluginabi.MethodPluginRegister, nil)
+	if errRegister != nil {
+		t.Fatalf("registerRPCPlugin() error = %v", errRegister)
+	}
+	if registered.Capabilities.ReasoningReplayPlugin == nil {
+		t.Fatal("ReasoningReplayPlugin = nil, want adapter")
+	}
+}
+
+func TestRegisterRPCPluginAcceptsSchema5WithoutReasoningReplayCapability(t *testing.T) {
+	lookup := newTestSymbolLookup(&testPlugin{registerResult: validTestPlugin("schema5-without-replay")})
+	lookup.schemaVersion = pluginabi.SchemaVersionStreamChunkOmitHistory
+
+	registered, errRegister := registerRPCPlugin(context.Background(), nil, "schema5-without-replay", lookup, pluginabi.MethodPluginRegister, nil)
+	if errRegister != nil {
+		t.Fatalf("registerRPCPlugin() error = %v, want schema 5 capability to remain optional", errRegister)
+	}
+	if registered.Capabilities.ReasoningReplayPlugin != nil {
+		t.Fatal("ReasoningReplayPlugin != nil for plugin that did not advertise the capability")
+	}
+}
+
 func TestRPCModelRouteUsesAdapter(t *testing.T) {
 	var routeCalls int
 	var gotReq pluginapi.ModelRouteRequest
@@ -1142,5 +1194,28 @@ func TestRPCRequestBodyPatchRawCABIAndSchemaVersionGate(t *testing.T) {
 	}
 	if pluginV7.Capabilities.RequestBodyPatcherBefore != nil || pluginV7.Capabilities.RequestInterceptorPatchBodyBefore {
 		t.Fatalf("schema v7 kept patch capability: %+v", pluginV7.Capabilities)
+	}
+}
+
+func TestSanitizePluginRequestReasoningReplayPrepare(t *testing.T) {
+	metadata := map[string]any{
+		"keep": "value",
+		"drop": make(chan struct{}),
+	}
+
+	for _, request := range []any{
+		pluginapi.ReasoningReplayPrepareRequest{Metadata: metadata},
+		rpcReasoningReplayPrepareRequest{
+			ReasoningReplayPrepareRequest: pluginapi.ReasoningReplayPrepareRequest{Metadata: metadata},
+			HostCallbackID:                "callback-1",
+		},
+	} {
+		raw, errMarshal := json.Marshal(sanitizePluginRequest(request))
+		if errMarshal != nil {
+			t.Fatalf("Marshal(sanitized reasoning replay request) error = %v", errMarshal)
+		}
+		if !json.Valid(raw) || strings.Contains(string(raw), "drop") {
+			t.Fatalf("sanitized reasoning replay request = %s, want valid JSON without unsupported metadata", raw)
+		}
 	}
 }

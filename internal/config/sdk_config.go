@@ -176,6 +176,11 @@ type CodexWebSearchResultCacheConfig struct {
 	// Limit specifies the maximum number of entries retained in the web search result cache.
 	// Defaults to 1024 when unset or zero.
 	Limit int `yaml:"limit" json:"limit"`
+
+	// StateFile persists the cache to a local file across graceful restarts.
+	// Relative paths resolve against auth-dir. Empty keeps the cache in memory only.
+	// Read once at startup; ignored when Home is enabled.
+	StateFile string `yaml:"state-file,omitempty" json:"state-file,omitempty"`
 }
 
 // Validate checks that the configured TTL and entry limit are valid.
@@ -265,6 +270,15 @@ func (c *CodexWebSearchResultCacheConfig) UnmarshalYAML(value *yaml.Node) error 
 				return fmt.Errorf("client.codex.web-search-result-cache.limit: %w", errDecode)
 			}
 			next.Limit = limit
+		case "state-file":
+			if valNode.Tag == "!!null" {
+				next.StateFile = ""
+				continue
+			}
+			if valNode.Kind != yaml.ScalarNode || valNode.Tag != "!!str" {
+				return fmt.Errorf("client.codex.web-search-result-cache.state-file must be a string")
+			}
+			next.StateFile = strings.TrimSpace(valNode.Value)
 		default:
 			return fmt.Errorf("client.codex.web-search-result-cache: unknown field %q", keyNode.Value)
 		}
@@ -286,9 +300,10 @@ func (c *CodexWebSearchResultCacheConfig) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	var raw struct {
-		Enabled bool            `json:"enabled"`
-		TTL     json.RawMessage `json:"ttl"`
-		Limit   int             `json:"limit"`
+		Enabled   bool            `json:"enabled"`
+		TTL       json.RawMessage `json:"ttl"`
+		Limit     int             `json:"limit"`
+		StateFile string          `json:"state-file"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(trimmed))
 	decoder.DisallowUnknownFields()
@@ -300,9 +315,10 @@ func (c *CodexWebSearchResultCacheConfig) UnmarshalJSON(data []byte) error {
 		return errTTL
 	}
 	next := CodexWebSearchResultCacheConfig{
-		Enabled: raw.Enabled,
-		TTL:     ttl,
-		Limit:   raw.Limit,
+		Enabled:   raw.Enabled,
+		TTL:       ttl,
+		Limit:     raw.Limit,
+		StateFile: strings.TrimSpace(raw.StateFile),
 	}
 	if errValidate := next.Validate(); errValidate != nil {
 		return errValidate

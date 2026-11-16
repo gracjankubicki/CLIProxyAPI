@@ -98,6 +98,8 @@ type Host struct {
 	callbackContexts           *callbackContextRegistry
 	usageStates                map[string]*pluginUsageState
 	maxPendingUsageRecords     int
+	reasoningReplayMu          sync.Mutex
+	reasoningReplayOwners      map[string]capabilityRecord
 	snapshot                   atomic.Value
 	// loadCleanupDoneHook, set by tests, runs after a late load cleanup dropped its load token.
 	loadCleanupDoneHook func()
@@ -140,6 +142,7 @@ func New() *Host {
 		modelStreams:               newModelStreamBridge(),
 		callbackContexts:           newCallbackContextRegistry(),
 		usageStates:                make(map[string]*pluginUsageState),
+		reasoningReplayOwners:      make(map[string]capabilityRecord),
 	}
 	h.snapshot.Store(emptySnapshot())
 	return h
@@ -1488,6 +1491,7 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.ResponseAfterTranslator != nil ||
 		caps.ResponseInterceptor != nil ||
 		caps.StreamChunkInterceptor != nil ||
+		caps.ReasoningReplayPlugin != nil ||
 		caps.WebSocketResponseObserver != nil ||
 		caps.ThinkingApplier != nil ||
 		caps.UsagePlugin != nil ||

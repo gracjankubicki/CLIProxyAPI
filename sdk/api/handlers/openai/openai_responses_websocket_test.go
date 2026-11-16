@@ -2738,6 +2738,146 @@ func TestForwardResponsesWebsocketTreatsResponseDoneAsTerminalWithoutRewriting(t
 	}
 }
 
+// response.failed ends the turn like completed and incomplete: a clean stream
+// close afterwards must not be reported as a timeout or close the client socket,
+// so the client can send a follow-up request on the same connection.
+func TestForwardResponsesWebsocketTreatsResponseFailedAsTerminal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = r
+
+		data := make(chan []byte, 1)
+		errCh := make(chan *interfaces.ErrorMessage)
+		data <- []byte(`{"type":"response.failed","response":{"id":"resp-f","status":"failed","error":{"code":"context_length_exceeded","message":"context window filled"},"output":[{"type":"message","id":"out-f"}]}}`)
+		close(data)
+		close(errCh)
+
+		completedOutput, completedResponseID, _, errMsg, err := (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
+			ctx,
+			newResponsesWebsocketWriter(conn),
+			func(...interface{}) {},
+			data,
+			errCh,
+			newInMemoryWebsocketTimelineLog(),
+			"session-failed",
+		)
+		if err != nil {
+			serverErrCh <- fmt.Errorf("forward returned %v, want nil (socket kept open)", err)
+			return
+		}
+		if errMsg != nil {
+			serverErrCh <- fmt.Errorf("unexpected websocket error message: %v", errMsg.Error)
+			return
+		}
+		// The turn ends, but a failed response has no completion identity, so it
+		// must not become the next previous_response_id (upstream contract, v8.0.46).
+		if completedResponseID != "" || ojson.GetBytes(completedOutput, "#").Int() != 0 {
+			serverErrCh <- fmt.Errorf("failed response recorded as a completion: id=%q output=%s", completedResponseID, completedOutput)
+			return
+		}
+		serverErrCh <- nil
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	_, payload, errRead := conn.ReadMessage()
+	if errRead != nil {
+		t.Fatalf("read websocket message: %v", errRead)
+	}
+	if got := ojson.GetBytes(payload, "type").String(); got != "response.failed" {
+		t.Fatalf("payload type = %s, want response.failed; payload=%s", got, payload)
+	}
+	// The timeout only guards against a hang: without the fix the forwarder takes
+	// the "closed before response.completed" path and never reports back.
+	select {
+	case errServer := <-serverErrCh:
+		if errServer != nil {
+			t.Fatalf("server error: %v", errServer)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("forwarder did not finish after response.failed")
+	}
+}
+
+// A stream error that follows a response.failed terminal must win over the
+// clean close of the data channel. The stream adapter closes errs before data,
+// so both channels are ready at once; the forwarder must still report the error.
+func TestForwardResponsesWebsocketKeepsStreamErrorAfterResponseFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	serverErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverErrCh <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = r
+
+		data := make(chan []byte, 1)
+		errCh := make(chan *interfaces.ErrorMessage, 1)
+		data <- []byte(`{"type":"response.failed","response":{"id":"resp-f","status":"failed","error":{"code":"stream_read_error","message":"read failed"},"output":[]}}`)
+		errCh <- &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: errors.New("upstream read failed")}
+		close(errCh)
+		close(data)
+
+		h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil))
+		_, _, _, errMsg, _ := h.forwardResponsesWebsocket(
+			ctx,
+			newResponsesWebsocketWriter(conn),
+			func(...interface{}) {},
+			data,
+			errCh,
+			newInMemoryWebsocketTimelineLog(),
+			"session-failed-then-error",
+		)
+		if errMsg == nil || errMsg.StatusCode != http.StatusBadGateway {
+			serverErrCh <- fmt.Errorf("stream error after response.failed was lost: errMsg=%v", errMsg)
+			return
+		}
+		serverErrCh <- nil
+	}))
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			break
+		}
+	}
+	select {
+	case errServer := <-serverErrCh:
+		if errServer != nil {
+			t.Fatalf("server error: %v", errServer)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("forwarder did not finish")
+	}
+}
+
 func TestShouldExposeResponsesUpstreamError(t *testing.T) {
 	tests := []struct {
 		status int

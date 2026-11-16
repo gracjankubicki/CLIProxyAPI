@@ -179,6 +179,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.Client.Codex.WebSearchResultCache.Limit != newCfg.Client.Codex.WebSearchResultCache.Limit {
 		changes = append(changes, fmt.Sprintf("client.codex.web-search-result-cache.limit: %d -> %d", oldCfg.Client.Codex.WebSearchResultCache.Limit, newCfg.Client.Codex.WebSearchResultCache.Limit))
 	}
+	if strings.TrimSpace(oldCfg.Client.Codex.WebSearchResultCache.StateFile) != strings.TrimSpace(newCfg.Client.Codex.WebSearchResultCache.StateFile) {
+		changes = append(changes, fmt.Sprintf("client.codex.web-search-result-cache.state-file: %s -> %s (applies after restart)", strings.TrimSpace(oldCfg.Client.Codex.WebSearchResultCache.StateFile), strings.TrimSpace(newCfg.Client.Codex.WebSearchResultCache.StateFile)))
+	}
 	if oldCfg.Codex.OrphanDelegationCompatibility != newCfg.Codex.OrphanDelegationCompatibility {
 		changes = append(changes, fmt.Sprintf("codex.orphan-delegation-compatibility: %t -> %t", oldCfg.Codex.OrphanDelegationCompatibility, newCfg.Codex.OrphanDelegationCompatibility))
 	}
@@ -217,6 +220,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
+	}
+	if strings.TrimSpace(oldCfg.Routing.SessionAffinityStateFile) != strings.TrimSpace(newCfg.Routing.SessionAffinityStateFile) {
+		changes = append(changes, fmt.Sprintf("routing.session-affinity-state-file: %s -> %s (applies after restart)", strings.TrimSpace(oldCfg.Routing.SessionAffinityStateFile), strings.TrimSpace(newCfg.Routing.SessionAffinityStateFile)))
 	}
 	if !reflect.DeepEqual(oldCfg.Payload, newCfg.Payload) {
 		changes = appendPayloadConfigChanges(changes, oldCfg.Payload, newCfg.Payload)

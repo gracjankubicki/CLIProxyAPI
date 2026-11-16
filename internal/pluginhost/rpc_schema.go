@@ -49,6 +49,7 @@ type rpcCapabilities struct {
 	ResponseAfterTranslator           bool                         `json:"response_after_translator"`
 	ResponseInterceptor               bool                         `json:"response_interceptor"`
 	StreamChunkInterceptor            bool                         `json:"response_stream_interceptor"`
+	ReasoningReplayPlugin             bool                         `json:"reasoning_replay_plugin"`
 	WebSocketResponseObserver         bool                         `json:"websocket_response_observer"`
 	ThinkingApplier                   bool                         `json:"thinking_applier"`
 	UsagePlugin                       bool                         `json:"usage_plugin"`
@@ -138,6 +139,21 @@ type rpcWebSocketResponseEvent struct {
 
 type rpcThinkingApplyRequest struct {
 	pluginapi.ThinkingApplyRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcReasoningReplayPrepareRequest struct {
+	pluginapi.ReasoningReplayPrepareRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcReasoningReplayObservation struct {
+	pluginapi.ReasoningReplayObservation
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcReasoningReplayCompletion struct {
+	pluginapi.ReasoningReplayCompletion
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
@@ -256,6 +272,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		ResponseAfterTranslator:           caps.ResponseAfterTranslator != nil,
 		ResponseInterceptor:               caps.ResponseInterceptor != nil,
 		StreamChunkInterceptor:            caps.StreamChunkInterceptor != nil,
+		ReasoningReplayPlugin:             caps.ReasoningReplayPlugin != nil,
 		WebSocketResponseObserver:         caps.WebSocketResponseObserver != nil,
 		ThinkingApplier:                   caps.ThinkingApplier != nil,
 		UsagePlugin:                       caps.UsagePlugin != nil,

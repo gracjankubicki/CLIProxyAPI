@@ -108,29 +108,7 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 }
 
 func newRoutingSelectorWithExisting(state routingRuntimeState, existing coreauth.Selector) coreauth.Selector {
-	var selector coreauth.Selector
-	switch state.strategy {
-	case "weighted-round-robin":
-		if existingWeighted := coreauth.UnwrapWeightedRoundRobinSelector(existing); existingWeighted != nil {
-			selector = existingWeighted
-		} else {
-			selector = &coreauth.WeightedRoundRobinSelector{}
-		}
-	case "fill-first":
-		selector = &coreauth.FillFirstSelector{}
-	default:
-		selector = &coreauth.RoundRobinSelector{}
-	}
-	if state.sessionAffinity {
-		subagents := state.sessionAffinitySubagents
-		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-			Fallback:         selector,
-			TTL:              state.sessionAffinityTTL,
-			SubagentAffinity: &subagents,
-			RebindOn:         state.sessionAffinityRebindOn,
-		})
-	}
-	return selector
+	return newRoutingSelectorWithCacheAndExisting(state, nil, existing)
 }
 
 func (s *Service) applyConfigUpdateWithAuthSynthesis(ctx context.Context, newCfg *config.Config, synthesizeConfigAuths bool) bool {
@@ -281,9 +259,10 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 	}
 	routingState := normalizedRoutingRuntimeState(commit.cfg)
 	if s.appliedRoutingState == nil || *s.appliedRoutingState != routingState {
-		s.coreManager.SetSelector(newRoutingSelectorWithExisting(routingState, s.coreManager.Selector()))
+		s.coreManager.SetSelector(newRoutingSelectorWithCacheAndExisting(routingState, s.sessionCache, s.coreManager.Selector()))
 		s.appliedRoutingState = &routingState
 	}
+	s.statePersistence.warnOnReload(commit.cfg, s.sessionCache != nil)
 	s.applyRetryConfig(commit.cfg)
 	store := s.resolveCooldownStateStore(commit.cfg)
 	if !s.coreManager.ApplyConfigWithCooldownStateStore(ctx, commit.cfg, store) {
