@@ -5,6 +5,7 @@ package cliproxy
 
 import (
 	"context"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accountmodels"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,7 @@ import (
 // It manages the complete lifecycle including authentication, file watching, HTTP server,
 // and integration with various AI service providers.
 type Service struct {
+	accountModels *accountmodels.Manager
 	// cfg holds the current application configuration.
 	cfg *config.Config
 

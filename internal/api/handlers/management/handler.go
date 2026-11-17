@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accountmodels"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,6 +38,8 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
+	accountModelsRefresh    func() accountmodels.Status
+	accountModelsStatus     func() accountmodels.Status
 	cfg                     *config.Config
 	configFilePath          string
 	mu                      sync.Mutex

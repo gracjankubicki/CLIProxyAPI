@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accountmodels"
 	"path/filepath"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 )
 
 type serverOptionConfig struct {
+	accountModelsRefresh  func() accountmodels.Status
+	accountModelsStatus   func() accountmodels.Status
 	pluginInterceptorHost handlers.PluginInterceptorHost
 	extraMiddleware       []gin.HandlerFunc
 	engineConfigurator    func(*gin.Engine)
@@ -32,6 +35,11 @@ type serverOptionConfig struct {
 
 // ServerOption customises HTTP server construction.
 type ServerOption func(*serverOptionConfig)
+
+// WithAccountModelDiscovery connects service-owned asynchronous discovery to management.
+func WithAccountModelDiscovery(refresh, status func() accountmodels.Status) ServerOption {
+	return func(cfg *serverOptionConfig) { cfg.accountModelsRefresh = refresh; cfg.accountModelsStatus = status }
+}
 
 func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.RequestLogger {
 	configDir := filepath.Dir(configPath)

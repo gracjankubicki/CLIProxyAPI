@@ -147,6 +147,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()
+		if discovered, ok := s.discoveredAccountModels(a); ok {
+			return s.publishAccountModels(a, discovered)
+		}
 		if entry := resolveConfigClaudeKeyForConfig(cfg, a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildClaudeConfigModels(entry)
@@ -181,6 +184,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 			models = registry.GetCodexFreeModels()
 		default:
 			models = registry.GetCodexProModels()
+		}
+		if discovered, ok := s.discoveredAccountModels(a); ok {
+			return s.publishAccountModels(a, discovered)
 		}
 		models = applyExcludedModels(models, excluded)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":

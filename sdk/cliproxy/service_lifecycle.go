@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/accountmodels"
 	"os"
 	"time"
 
@@ -135,8 +136,10 @@ func (s *Service) Run(ctx context.Context) error {
 		redisqueue.SetEnabled(true)
 	}
 
-	// handlers no longer depend on legacy clients; pass nil slice initially
-	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	// Initialize before auth registration; model lookups only read the persistent cache.
+	s.accountModels = accountmodels.New(s.coreManager, s.currentConfig, s.publishAccountModels, s.accountModelAllowed)
+	serverOptions := append(append([]api.ServerOption(nil), s.serverOptions...), api.WithAccountModelDiscovery(s.refreshAccountModels, s.accountModelStatus))
+	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, serverOptions...)
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.configRuntimeMu.Lock()
@@ -234,6 +237,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.registerModelRefreshCallback()
+	go s.accountModels.Run(ctx)
 	if !homeEnabled {
 		go s.runAntigravityModelRefresh(ctx)
 	}

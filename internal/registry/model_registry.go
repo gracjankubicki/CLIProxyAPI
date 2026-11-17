@@ -38,6 +38,9 @@ type NativeCapabilities struct {
 
 // ModelInfo represents information about an available model
 type ModelInfo struct {
+	// CodexClientMetadata is an official account's Codex catalog entry, never a credential.
+	CodexClientMetadata []byte `json:"-"`
+	AccountDiscovered   bool   `json:"-"`
 	// ID is the unique identifier for the model
 	ID string `json:"id"`
 	// MetadataModelID identifies the canonical model used to resolve client metadata.
@@ -868,6 +871,7 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		return nil
 	}
 	copyModel := *model
+	copyModel.CodexClientMetadata = append([]byte(nil), model.CodexClientMetadata...)
 	if model.NativeCapabilities != nil {
 		copyCapabilities := *model.NativeCapabilities
 		if model.NativeCapabilities.WebSearch != nil {
@@ -1657,7 +1661,7 @@ func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 		if !available || registration == nil || registration.Info == nil {
 			continue
 		}
-		result = append(result, cloneModelInfo(registration.Info))
+		result = append(result, r.accountModelInfoLocked(registration.Info.ID, "", registration.Info))
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return strings.TrimSpace(result[i].ID) < strings.TrimSpace(result[j].ID)
@@ -1678,7 +1682,10 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 			continue
 		}
 
-		model := r.convertModelToMap(registration.Info, handlerType)
+		if registration.Info == nil {
+			continue
+		}
+		model := r.convertModelToMap(r.accountModelInfoLocked(registration.Info.ID, "", registration.Info), handlerType)
 		if model != nil {
 			models = append(models, model)
 		}
@@ -1844,11 +1851,11 @@ func (r *ModelRegistry) GetAvailableModelsByProvider(provider string) []*ModelIn
 
 		if effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0) {
 			if entry.info != nil {
-				result = append(result, cloneModelInfo(entry.info))
+				result = append(result, r.accountModelInfoLocked(modelID, provider, entry.info))
 				continue
 			}
 			if ok && registration != nil && registration.Info != nil {
-				result = append(result, cloneModelInfo(registration.Info))
+				result = append(result, r.accountModelInfoLocked(modelID, provider, registration.Info))
 			}
 		}
 	}
@@ -1964,14 +1971,14 @@ func (r *ModelRegistry) GetModelInfo(modelID, provider string) *ModelInfo {
 			if reg.Providers != nil {
 				if count, okProv := reg.Providers[provider]; okProv && count > 0 && reg.InfoByProvider != nil {
 					if info, okInfo := reg.InfoByProvider[provider]; okInfo && info != nil {
-						return cloneModelInfo(info)
+						return r.accountModelInfoLocked(modelID, provider, info)
 					}
 				}
 			}
 			return nil
 		}
 		// Fallback to global info (last registered) when provider is unspecified.
-		return cloneModelInfo(reg.Info)
+		return r.accountModelInfoLocked(modelID, provider, reg.Info)
 	}
 	return nil
 }

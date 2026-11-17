@@ -123,7 +123,16 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 
 		metadataID := codexClientMetadataModelID(id)
 
-		if template, ok := templates[metadataID]; ok {
+		template, templateFound := templates[metadataID]
+		accountInfo := registry.LookupModelInfo(id)
+		if accountInfo != nil && len(accountInfo.CodexClientMetadata) > 0 {
+			var discovered map[string]any
+			if json.Unmarshal(accountInfo.CodexClientMetadata, &discovered) == nil {
+				template = discovered
+				templateFound = true
+			}
+		}
+		if templateFound {
 			entry := cloneCodexClientModelMap(template)
 			entry["slug"] = id
 			info := registry.LookupModelInfo(id)
@@ -133,6 +142,9 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 			applyCodexClientBaseInstructions(entry, model)
 			applyCodexClientMaxContextLengthOverride(entry, model)
 			applyCodexClientMaxTokens(entry, model)
+			if accountInfo != nil && len(accountInfo.CodexClientMetadata) > 0 && accountInfo.MaxCompletionTokens > 0 {
+				entry["max_tokens"] = accountInfo.MaxCompletionTokens
+			}
 			if thinkingSupport := codexClientThinkingSupport(model); thinkingSupport != nil {
 				applyCodexClientThinkingMetadata(entry, thinkingSupport, clientVersion)
 			}

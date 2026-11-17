@@ -16,7 +16,8 @@ type Config struct {
 	// response compression settings (YAML: server.response-compression).
 	ServerResponseCompression ResponseCompressionConfig `yaml:"-" json:"response-compression"`
 	// Models selects optional catalog sources independently for each catalog.
-	Models ModelCatalogs `yaml:"models" json:"models"`
+	Models                ModelCatalogs               `yaml:"models" json:"models"`
+	AccountModelDiscovery AccountModelDiscoveryConfig `yaml:"account-model-discovery" json:"account-model-discovery"`
 
 	SDKConfig `yaml:",inline"`
 	// Host is the network host/interface on which the API server will bind.
