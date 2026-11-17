@@ -1450,7 +1450,10 @@ func TestServiceHeartbeatFailoverDoesNotDrainBlockingScope(t *testing.T) {
 	}
 	select {
 	case <-secondSubscribe:
-	case <-time.After(time.Second):
+	// The supervisor deliberately adds up to one second of retry jitter after
+	// detecting heartbeat loss. Allow detection and network scheduling too;
+	// the blocked scope remains unreleased, so draining would still hang here.
+	case <-time.After(3 * time.Second):
 		t.Fatal("new subscription did not start while the old scope remained active")
 	}
 	service.homeMu.Lock()
